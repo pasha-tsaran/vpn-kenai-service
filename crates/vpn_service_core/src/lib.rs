@@ -6,7 +6,7 @@ use std::collections::{HashSet, VecDeque};
 
 use vpn_contracts::{
     AmneziaWgProfile, ConnectRequest, ConnectionPhase, ControlCommand, RequestEnvelope, StateEvent,
-    TunnelStatistics, WireGuardProfile, CONTRACT_VERSION,
+    TunnelStatistics, VlessRealityProfile, WireGuardProfile, CONTRACT_VERSION,
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -43,6 +43,14 @@ pub trait VpnBackend {
         &mut self,
         _profile_id: &str,
         _profile: &AmneziaWgProfile,
+        _kill_switch: bool,
+    ) -> Result<(), BackendFailure> {
+        Err(BackendFailure::UnsupportedFeature)
+    }
+    fn connect_vless(
+        &mut self,
+        _profile_id: &str,
+        _profile: &VlessRealityProfile,
         _kill_switch: bool,
     ) -> Result<(), BackendFailure> {
         Err(BackendFailure::UnsupportedFeature)
@@ -85,6 +93,12 @@ pub trait ProfileVault {
         Err(CommandError::ProfileStoreUnavailable)
     }
     fn load_amneziawg(&self, _profile_id: &str) -> Result<AmneziaWgProfile, CommandError> {
+        Err(CommandError::ProfileStoreUnavailable)
+    }
+    fn store_vless(&mut self, _profile: &VlessRealityProfile) -> Result<String, CommandError> {
+        Err(CommandError::ProfileStoreUnavailable)
+    }
+    fn load_vless(&self, _profile_id: &str) -> Result<VlessRealityProfile, CommandError> {
         Err(CommandError::ProfileStoreUnavailable)
     }
     fn delete(&mut self, profile_id: &str) -> Result<(), CommandError>;
@@ -185,56 +199,9 @@ impl<V: ProfileVault, B: VpnBackend> ServiceCommandProcessor<V, B> {
         let (code, returned_profile_id, statistics) = match request.command {
             ControlCommand::Status => (self.reconcile_status()?, None, None),
             ControlCommand::Diagnostics => ("DIAGNOSTICS_REDACTED", None, None),
-            ControlCommand::Connect(connect) => {
-                if self.machine.state().phase.is_failure() {
-                    self.machine.reset_failure()?;
-                }
-                self.machine.begin_connect(&connect)?;
-                self.machine.mark_validated()?;
-                let result = match connect.protocol {
-                    vpn_contracts::Protocol::WireGuard => {
-                        let profile = self.vault.load_wireguard(&connect.profile_id)?;
-                        self.backend
-                            .connect(&connect.profile_id, &profile, connect.kill_switch)
-                    }
-                    vpn_contracts::Protocol::AmneziaWg => {
-                        let profile = self.vault.load_amneziawg(&connect.profile_id)?;
-                        self.backend.connect_amneziawg(
-                            &connect.profile_id,
-                            &profile,
-                            connect.kill_switch,
-                        )
-                    }
-                    vpn_contracts::Protocol::VlessReality => {
-                        Err(BackendFailure::UnsupportedFeature)
-                    }
-                };
-                match result {
-                    Ok(()) => {
-                        self.machine.mark_connected(false)?;
-                        ("CONNECTED", None, None)
-                    }
-                    Err(failure) => {
-                        let (phase, code) = backend_failure(failure);
-                        self.machine.fail(phase, code)?;
-                        (code, None, None)
-                    }
-                }
-            }
+            ControlCommand::Connect(connect) => (self.connect_request(&connect)?, None, None),
             ControlCommand::Disconnect { operation_id } => {
-                if self.machine.state().phase.is_failure() {
-                    self.backend
-                        .disconnect()
-                        .map_err(|_| CommandError::ProfileStoreUnavailable)?;
-                    self.machine.reset_failure()?;
-                } else {
-                    self.machine.begin_disconnect(&operation_id)?;
-                    self.backend
-                        .disconnect()
-                        .map_err(|_| CommandError::ProfileStoreUnavailable)?;
-                    self.machine.mark_disconnected()?;
-                }
-                ("DISCONNECTED", None, None)
+                (self.disconnect_request(&operation_id)?, None, None)
             }
             ControlCommand::ImportWireGuardProfile(import) => {
                 let profile_id = self.import_wireguard(&import.operation_id, &import.profile)?;
@@ -242,6 +209,10 @@ impl<V: ProfileVault, B: VpnBackend> ServiceCommandProcessor<V, B> {
             }
             ControlCommand::ImportAmneziaWgProfile(import) => {
                 let profile_id = self.import_amneziawg(&import.operation_id, &import.profile)?;
+                ("PROFILE_STORED", Some(profile_id), None)
+            }
+            ControlCommand::ImportVlessRealityProfile(import) => {
+                let profile_id = self.import_vless(&import.operation_id, &import.profile)?;
                 ("PROFILE_STORED", Some(profile_id), None)
             }
             ControlCommand::DeleteProfile {
@@ -287,6 +258,58 @@ impl<V: ProfileVault, B: VpnBackend> ServiceCommandProcessor<V, B> {
         self.recent_ids.push_back(request_id);
     }
 
+    fn connect_request(&mut self, connect: &ConnectRequest) -> Result<&'static str, CommandError> {
+        if self.machine.state().phase.is_failure() {
+            self.machine.reset_failure()?;
+        }
+        self.machine.begin_connect(connect)?;
+        self.machine.mark_validated()?;
+        let result = match connect.protocol {
+            vpn_contracts::Protocol::WireGuard => {
+                let profile = self.vault.load_wireguard(&connect.profile_id)?;
+                self.backend
+                    .connect(&connect.profile_id, &profile, connect.kill_switch)
+            }
+            vpn_contracts::Protocol::AmneziaWg => {
+                let profile = self.vault.load_amneziawg(&connect.profile_id)?;
+                self.backend
+                    .connect_amneziawg(&connect.profile_id, &profile, connect.kill_switch)
+            }
+            vpn_contracts::Protocol::VlessReality => {
+                let profile = self.vault.load_vless(&connect.profile_id)?;
+                self.backend
+                    .connect_vless(&connect.profile_id, &profile, connect.kill_switch)
+            }
+        };
+        match result {
+            Ok(()) => {
+                self.machine.mark_connected(false)?;
+                Ok("CONNECTED")
+            }
+            Err(failure) => {
+                let (phase, code) = backend_failure(failure);
+                self.machine.fail(phase, code)?;
+                Ok(code)
+            }
+        }
+    }
+
+    fn disconnect_request(&mut self, operation_id: &str) -> Result<&'static str, CommandError> {
+        if self.machine.state().phase.is_failure() {
+            self.backend
+                .disconnect()
+                .map_err(|_| CommandError::ProfileStoreUnavailable)?;
+            self.machine.reset_failure()?;
+        } else {
+            self.machine.begin_disconnect(operation_id)?;
+            self.backend
+                .disconnect()
+                .map_err(|_| CommandError::ProfileStoreUnavailable)?;
+            self.machine.mark_disconnected()?;
+        }
+        Ok("DISCONNECTED")
+    }
+
     fn import_wireguard(
         &mut self,
         operation_id: &str,
@@ -303,6 +326,15 @@ impl<V: ProfileVault, B: VpnBackend> ServiceCommandProcessor<V, B> {
     ) -> Result<String, CommandError> {
         validate_import(operation_id, profile.validate())?;
         validate_stored_id(self.vault.store_amneziawg(profile)?)
+    }
+
+    fn import_vless(
+        &mut self,
+        operation_id: &str,
+        profile: &VlessRealityProfile,
+    ) -> Result<String, CommandError> {
+        validate_import(operation_id, profile.validate())?;
+        validate_stored_id(self.vault.store_vless(profile)?)
     }
 
     fn reconcile_status(&mut self) -> Result<&'static str, CommandError> {

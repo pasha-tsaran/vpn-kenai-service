@@ -13,6 +13,10 @@ final class _RecordingProvisioner implements VpnProfileProvisioner {
       'awg-00112233445566778899aabbccddeeff';
 
   @override
+  Future<String> provisionVlessReality(String configuration) async =>
+      'xray-00112233445566778899aabbccddeeff';
+
+  @override
   Future<void> deleteProfile(String profileId) async {
     deleted.add(profileId);
   }
@@ -134,15 +138,21 @@ void main() {
         await storage.read('vpn.amneziawg_profile_handle'),
         'awg-00112233445566778899aabbccddeeff',
       );
+      expect(
+        await storage.read('vpn.vless_profile_handle'),
+        'xray-00112233445566778899aabbccddeeff',
+      );
 
       await repository.signOut();
 
       expect(provisioner.deleted, <String>[
         'wg-00112233445566778899aabbccddeeff',
         'awg-00112233445566778899aabbccddeeff',
+        'xray-00112233445566778899aabbccddeeff',
       ]);
       expect(await storage.read('vpn.profile_handle'), isNull);
       expect(await storage.read('vpn.amneziawg_profile_handle'), isNull);
+      expect(await storage.read('vpn.vless_profile_handle'), isNull);
     });
   });
 

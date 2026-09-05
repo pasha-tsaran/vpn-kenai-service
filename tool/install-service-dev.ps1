@@ -16,6 +16,8 @@ $payloadSource = Join-Path $repoRoot 'third_party\wireguard\windows\amd64'
 $payloadDestination = Join-Path (Split-Path -Parent $resolvedBinary) 'wireguard\amd64'
 $awgPayloadSource = Join-Path $repoRoot 'third_party\amneziawg\windows\amd64'
 $awgPayloadDestination = Join-Path (Split-Path -Parent $resolvedBinary) 'amneziawg\amd64'
+$xrayPayloadSource = Join-Path $repoRoot 'third_party\xray\windows\amd64'
+$xrayPayloadDestination = Join-Path (Split-Path -Parent $resolvedBinary) 'xray\amd64'
 $expectedHashes = @{
     'tunnel.dll' = '5533cf9cb741d5e9daa7f429aa1c56beba4a500934877c9d072f721f512583ca'
     'wireguard.dll' = 'b1b85e072c45d81358be29d94c599dc76652f912be8c0f0a41e2d5d89a6461d3'
@@ -23,6 +25,10 @@ $expectedHashes = @{
 $expectedAwgHashes = @{
     'amneziawg.exe' = '5b00905ed02619fe149ceafc898e79993d4455a0cdfa92072b3bb9aee7b2d537'
     'awg.exe' = '26ac0be14a8353eacf2f933736f6f7912f89ec7c59c4190cc990492934c74537'
+    'wintun.dll' = 'e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce'
+}
+$expectedXrayHashes = @{
+    'xray.exe' = '15c2d007954ac53ba69b80ec91242786b3c0b71d52649165b4ca1d5cc96ef8f1'
     'wintun.dll' = 'e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce'
 }
 foreach ($name in $expectedHashes.Keys) {
@@ -47,6 +53,16 @@ foreach ($name in $expectedAwgHashes.Keys) {
         throw "AmneziaWG payload signature mismatch: $name"
     }
 }
+foreach ($name in $expectedXrayHashes.Keys) {
+    $source = Join-Path $xrayPayloadSource $name
+    $actual = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expectedXrayHashes[$name]) { throw "Xray payload hash mismatch: $name" }
+}
+$xrayWintunSignature = Get-AuthenticodeSignature -LiteralPath (Join-Path $xrayPayloadSource 'wintun.dll')
+if ($xrayWintunSignature.Status -ne 'Valid' -or
+    $xrayWintunSignature.SignerCertificate.Subject -notmatch 'CN=WireGuard LLC') {
+    throw 'Xray wintun.dll does not have the expected valid WireGuard LLC signature.'
+}
 
 $principal = New-Object Security.Principal.WindowsPrincipal(
     [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -69,6 +85,11 @@ if ($PSCmdlet.ShouldProcess($serviceName, "Install service from $resolvedBinary"
     foreach ($name in $expectedAwgHashes.Keys) {
         Copy-Item -LiteralPath (Join-Path $awgPayloadSource $name) `
             -Destination (Join-Path $awgPayloadDestination $name) -Force
+    }
+    New-Item -ItemType Directory -Path $xrayPayloadDestination -Force | Out-Null
+    foreach ($name in $expectedXrayHashes.Keys) {
+        Copy-Item -LiteralPath (Join-Path $xrayPayloadSource $name) `
+            -Destination (Join-Path $xrayPayloadDestination $name) -Force
     }
     New-Service `
         -Name $serviceName `

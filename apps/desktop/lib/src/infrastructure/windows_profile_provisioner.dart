@@ -7,9 +7,10 @@ import 'dart:typed_data';
 import 'package:kenai_core/kenai_core.dart';
 
 import 'amneziawg_config_parser.dart';
+import 'vless_reality_uri_parser.dart';
 import 'wireguard_config_parser.dart';
 
-const String _pipeName = r'\\.\pipe\KenaiVpnControl-v3';
+const String _pipeName = r'\\.\pipe\KenaiVpnControl-v4';
 const int _maximumFrameSize = 32 * 1024;
 
 final class ProfileProvisioningException implements Exception {
@@ -83,15 +84,18 @@ final class WindowsVpnProfileProvisioner implements VpnProfileProvisioner {
     ProfileIpcTransport transport = const WindowsNamedPipeProfileTransport(),
     WireGuardConfigParser parser = const WireGuardConfigParser(),
     AmneziaWgConfigParser amneziaWgParser = const AmneziaWgConfigParser(),
+    VlessRealityUriParser vlessRealityParser = const VlessRealityUriParser(),
     Random? random,
   })  : _transport = transport,
         _parser = parser,
         _amneziaWgParser = amneziaWgParser,
+        _vlessRealityParser = vlessRealityParser,
         _random = random ?? Random.secure();
 
   final ProfileIpcTransport _transport;
   final WireGuardConfigParser _parser;
   final AmneziaWgConfigParser _amneziaWgParser;
+  final VlessRealityUriParser _vlessRealityParser;
   final Random _random;
 
   @override
@@ -115,6 +119,21 @@ final class WindowsVpnProfileProvisioner implements VpnProfileProvisioner {
     final String requestId = _identifier('request');
     final Uint8List response = await _transport.exchange(
       _encodeAmneziaWgImport(requestId, _identifier('provision'), profile),
+    );
+    final VpnIpcResponse decoded = decodeVpnIpcResponse(response, requestId);
+    if (decoded.code != 'PROFILE_STORED' || decoded.profileId == null) {
+      throw ProfileProvisioningException(decoded.code);
+    }
+    return decoded.profileId!;
+  }
+
+  @override
+  Future<String> provisionVlessReality(String configuration) async {
+    final VlessRealityProvisioningProfile profile =
+        _vlessRealityParser.parse(configuration);
+    final String requestId = _identifier('request');
+    final Uint8List response = await _transport.exchange(
+      _encodeVlessImport(requestId, _identifier('provision'), profile),
     );
     final VpnIpcResponse decoded = decodeVpnIpcResponse(response, requestId);
     if (decoded.code != 'PROFILE_STORED' || decoded.profileId == null) {
@@ -259,6 +278,33 @@ Uint8List _longString(String value) {
   return Uint8List.fromList(<int>[..._u16(encoded.length), ...encoded]);
 }
 
+Uint8List _encodeVlessImport(
+  String requestId,
+  String operationId,
+  VlessRealityProvisioningProfile profile,
+) {
+  final BytesBuilder body = BytesBuilder(copy: false)
+    ..add(_identifierBytes(requestId))
+    ..add(_identifierBytes(operationId))
+    ..add(_boundedString(profile.clientId))
+    ..add(_boundedString(profile.endpointHost))
+    ..add(_u16(profile.endpointPort))
+    ..add(_boundedString(profile.serverName))
+    ..add(_boundedString(profile.fingerprint))
+    ..add(_boundedString(profile.realityPassword))
+    ..add(_optionalBoundedString(profile.shortId))
+    ..add(_longString(profile.spiderX));
+  return encodeVpnIpcFrame(9, body.takeBytes());
+}
+
+Uint8List _optionalBoundedString(String value) {
+  final Uint8List encoded = Uint8List.fromList(utf8.encode(value));
+  if (encoded.length > 253 || encoded.contains(0)) {
+    throw const ProfileProvisioningException('INVALID_PROFILE');
+  }
+  return Uint8List.fromList(<int>[encoded.length, ...encoded]);
+}
+
 Uint8List encodeVpnIpcFrame(int opcode, Uint8List body) {
   if (body.length + 12 > _maximumFrameSize) {
     throw const ProfileProvisioningException('PROFILE_TOO_LARGE');
@@ -266,7 +312,7 @@ Uint8List encodeVpnIpcFrame(int opcode, Uint8List body) {
   final Uint8List frame = Uint8List(body.length + 12);
   frame.setRange(0, 4, const <int>[0x4b, 0x56, 0x50, 0x4e]);
   ByteData.sublistView(frame)
-    ..setUint16(4, 3, Endian.little)
+    ..setUint16(4, 4, Endian.little)
     ..setUint8(6, opcode)
     ..setUint8(7, 0)
     ..setUint32(8, body.length, Endian.little);
@@ -317,7 +363,7 @@ VpnIpcResponse decodeVpnIpcResponse(
       frame[1] != 0x56 ||
       frame[2] != 0x50 ||
       frame[3] != 0x4e ||
-      data.getUint16(4, Endian.little) != 3 ||
+      data.getUint16(4, Endian.little) != 4 ||
       frame[6] != 0x81 ||
       frame[7] != 0 ||
       data.getUint32(8, Endian.little) != frame.length - 12) {

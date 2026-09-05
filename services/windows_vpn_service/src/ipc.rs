@@ -29,7 +29,7 @@ use windows_sys::Win32::{
     },
 };
 
-const PIPE_NAME: &str = r"\\.\pipe\KenaiVpnControl-v3";
+const PIPE_NAME: &str = r"\\.\pipe\KenaiVpnControl-v4";
 const HEADER_SIZE: usize = 12;
 const INVALID_REQUEST_ID: &str = "invalid-request";
 

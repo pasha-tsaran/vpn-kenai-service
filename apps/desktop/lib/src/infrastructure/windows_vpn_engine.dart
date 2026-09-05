@@ -39,6 +39,7 @@ final class WindowsVpnEngine implements VpnEngine {
   Set<VpnProtocol> get supportedProtocols => const <VpnProtocol>{
         VpnProtocol.wireGuard,
         VpnProtocol.amneziaWg,
+        VpnProtocol.vlessReality,
       };
 
   @override
@@ -51,7 +52,8 @@ final class WindowsVpnEngine implements VpnEngine {
         isMock: false,
         supportsKillSwitch: false,
         supportsDns: protocol == VpnProtocol.wireGuard ||
-            protocol == VpnProtocol.amneziaWg,
+            protocol == VpnProtocol.amneziaWg ||
+            protocol == VpnProtocol.vlessReality,
         supportsNetworkChangeReconnect: false,
         supportsSleepRecovery: false,
       );
@@ -82,7 +84,7 @@ final class WindowsVpnEngine implements VpnEngine {
       final String? profileHandle = switch (request.profile.protocol) {
         VpnProtocol.wireGuard => access.profileHandle,
         VpnProtocol.amneziaWg => access.amneziaWgProfileHandle,
-        _ => null,
+        VpnProtocol.vlessReality => access.vlessProfileHandle,
       };
       if (profileHandle == null || !_validIdentifier(profileHandle)) {
         _emitFailure('PROFILE_NOT_FOUND');
@@ -94,7 +96,11 @@ final class WindowsVpnEngine implements VpnEngine {
         Uint8List.fromList(<int>[
           ..._identifierBytes(request.operationId),
           ..._identifierBytes(profileHandle),
-          request.profile.protocol == VpnProtocol.amneziaWg ? 2 : 1,
+          switch (request.profile.protocol) {
+            VpnProtocol.wireGuard => 1,
+            VpnProtocol.amneziaWg => 2,
+            VpnProtocol.vlessReality => 3,
+          },
           0,
         ]),
       );
@@ -180,9 +186,11 @@ final class WindowsVpnEngine implements VpnEngine {
       );
     }
     final _AccountAccess access = await _accountAccess();
-    final String? handle = profile.protocol == VpnProtocol.amneziaWg
-        ? access.amneziaWgProfileHandle
-        : access.profileHandle;
+    final String? handle = switch (profile.protocol) {
+      VpnProtocol.wireGuard => access.profileHandle,
+      VpnProtocol.amneziaWg => access.amneziaWgProfileHandle,
+      VpnProtocol.vlessReality => access.vlessProfileHandle,
+    };
     return ProfileValidation(
       isValid: access.active && handle != null,
       errorCode: !access.active
@@ -222,6 +230,8 @@ final class WindowsVpnEngine implements VpnEngine {
         await _secureStorage.read(SecureAccountStorageKeys.profileHandle);
     final String? amneziaWgHandle = await _secureStorage
         .read(SecureAccountStorageKeys.amneziaWgProfileHandle);
+    final String? vlessHandle =
+        await _secureStorage.read(SecureAccountStorageKeys.vlessProfileHandle);
     if (encoded == null) return const _AccountAccess(active: false);
     try {
       final Object? decoded = jsonDecode(encoded);
@@ -234,7 +244,8 @@ final class WindowsVpnEngine implements VpnEngine {
       return _AccountAccess(
           active: active,
           profileHandle: handle,
-          amneziaWgProfileHandle: amneziaWgHandle);
+          amneziaWgProfileHandle: amneziaWgHandle,
+          vlessProfileHandle: vlessHandle);
     } on FormatException {
       return const _AccountAccess(active: false);
     }
@@ -331,9 +342,13 @@ final class WindowsVpnEngine implements VpnEngine {
 
 final class _AccountAccess {
   const _AccountAccess(
-      {required this.active, this.profileHandle, this.amneziaWgProfileHandle});
+      {required this.active,
+      this.profileHandle,
+      this.amneziaWgProfileHandle,
+      this.vlessProfileHandle});
 
   final bool active;
   final String? profileHandle;
   final String? amneziaWgProfileHandle;
+  final String? vlessProfileHandle;
 }

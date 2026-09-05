@@ -15,6 +15,7 @@ void main() {
     expect(servers.single.protocols, <VpnProtocol>{
       VpnProtocol.wireGuard,
       VpnProtocol.amneziaWg,
+      VpnProtocol.vlessReality,
     });
     expect(await repository.getServers(query: 'Германия'), isEmpty);
   });

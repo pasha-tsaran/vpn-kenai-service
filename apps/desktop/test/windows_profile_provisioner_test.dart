@@ -75,11 +75,28 @@ AllowedIPs = 0.0.0.0/0
     expect(_containsSequence(transport.lastRequest, privateKey.codeUnits),
         isFalse);
   });
+
+  test('imports typed VLESS REALITY fields without forwarding its URI',
+      () async {
+    final String clientId =
+        <int>[8, 4, 4, 4, 12].map((int length) => 'a' * length).join('-');
+    final String uri = 'vless://$clientId@vpn.example.test:443?'
+        'type=raw&security=reality&flow=xtls-rprx-vision&'
+        'sni=cover.example.test&fp=chrome&pbk=${'A' * 43}&sid=aabbccdd';
+
+    final String profileId = await provisioner.provisionVlessReality(uri);
+
+    expect(profileId, _FakeTransport.xrayHandle);
+    expect(transport.opcodes, <int>[9]);
+    expect(String.fromCharCodes(transport.lastRequest),
+        isNot(contains('vless://')));
+  });
 }
 
 final class _FakeTransport implements ProfileIpcTransport {
   static const String handle = 'wg-00112233445566778899aabbccddeeff';
   static const String awgHandle = 'awg-00112233445566778899aabbccddeeff';
+  static const String xrayHandle = 'xray-00112233445566778899aabbccddeeff';
   final List<int> opcodes = <int>[];
   Uint8List lastRequest = Uint8List(0);
 
@@ -89,8 +106,12 @@ final class _FakeTransport implements ProfileIpcTransport {
     opcodes.add(request[6]);
     final int idLength = request[12];
     final List<int> requestId = request.sublist(13, 13 + idLength);
-    final bool isImport = request[6] == 5 || request[6] == 8;
-    final String selectedHandle = request[6] == 8 ? awgHandle : handle;
+    final bool isImport = request[6] == 5 || request[6] == 8 || request[6] == 9;
+    final String selectedHandle = switch (request[6]) {
+      8 => awgHandle,
+      9 => xrayHandle,
+      _ => handle,
+    };
     final String code = isImport ? 'PROFILE_STORED' : 'PROFILE_DELETED';
     final List<int> body = <int>[
       idLength,
@@ -111,7 +132,7 @@ final class _FakeTransport implements ProfileIpcTransport {
       ..setRange(0, 4, const <int>[0x4b, 0x56, 0x50, 0x4e])
       ..setRange(12, 12 + body.length, body);
     ByteData.sublistView(response)
-      ..setUint16(4, 3, Endian.little)
+      ..setUint16(4, 4, Endian.little)
       ..setUint8(6, 0x81)
       ..setUint32(8, body.length, Endian.little);
     return response;

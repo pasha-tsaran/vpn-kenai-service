@@ -39,6 +39,10 @@ mod windows_service_host {
     mod windows_backend {
         include!("windows_backend.rs");
     }
+    #[allow(unsafe_code)]
+    mod xray_engine {
+        include!("xray_engine.rs");
+    }
 
     const SERVICE_NAME: &str = "KenaiVpnService";
 

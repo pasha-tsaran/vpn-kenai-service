@@ -12,6 +12,7 @@ abstract final class SecureAccountStorageKeys {
   static const String vless = 'vpn.vless';
   static const String profileHandle = 'vpn.profile_handle';
   static const String amneziaWgProfileHandle = 'vpn.amneziawg_profile_handle';
+  static const String vlessProfileHandle = 'vpn.vless_profile_handle';
 }
 
 final class SecureAccountRepository implements AccountRepository {
@@ -31,6 +32,8 @@ final class SecureAccountRepository implements AccountRepository {
   static const String _profileHandle = SecureAccountStorageKeys.profileHandle;
   static const String _amneziaWgProfileHandle =
       SecureAccountStorageKeys.amneziaWgProfileHandle;
+  static const String _vlessProfileHandle =
+      SecureAccountStorageKeys.vlessProfileHandle;
 
   final ActivationApiClient _apiClient;
   final SecureStorage _secureStorage;
@@ -49,6 +52,7 @@ final class SecureAccountRepository implements AccountRepository {
     );
     String? provisionedHandle;
     String? provisionedAmneziaWgHandle;
+    String? provisionedVlessHandle;
     try {
       await _secureStorage.write(
         key: _activationKey,
@@ -82,10 +86,19 @@ final class SecureAccountRepository implements AccountRepository {
       } else {
         await _secureStorage.delete(_amneziaWgProfileHandle);
       }
+      final String? vless = result.vpnCredentials[VpnProtocol.vlessReality];
       await _writeCredential(
-        _vless,
-        result.vpnCredentials[VpnProtocol.vlessReality],
-      );
+          _vless, _profileProvisioner == null ? vless : null);
+      if (_profileProvisioner != null && vless != null) {
+        provisionedVlessHandle =
+            await _profileProvisioner.provisionVlessReality(vless);
+        await _secureStorage.write(
+          key: _vlessProfileHandle,
+          value: provisionedVlessHandle,
+        );
+      } else {
+        await _secureStorage.delete(_vlessProfileHandle);
+      }
       await _secureStorage.write(key: _session, value: _encode(session));
       return session;
     } on Object {
@@ -101,6 +114,13 @@ final class SecureAccountRepository implements AccountRepository {
         try {
           await _profileProvisioner?.deleteProfile(provisionedAmneziaWgHandle);
         } on Object {/* preserve original error */}
+      }
+      if (provisionedVlessHandle != null) {
+        try {
+          await _profileProvisioner?.deleteProfile(provisionedVlessHandle);
+        } on Object {
+          // Preserve the original activation/storage failure.
+        }
       }
       await _clearAccountData();
       rethrow;
@@ -133,6 +153,10 @@ final class SecureAccountRepository implements AccountRepository {
     if (amneziaWgHandle != null && _profileProvisioner != null) {
       await _profileProvisioner.deleteProfile(amneziaWgHandle);
     }
+    final String? vlessHandle = await _secureStorage.read(_vlessProfileHandle);
+    if (vlessHandle != null && _profileProvisioner != null) {
+      await _profileProvisioner.deleteProfile(vlessHandle);
+    }
     await _clearAccountData();
   }
 
@@ -145,6 +169,7 @@ final class SecureAccountRepository implements AccountRepository {
       _vless,
       _profileHandle,
       _amneziaWgProfileHandle,
+      _vlessProfileHandle,
     ]) {
       await _secureStorage.delete(key);
     }

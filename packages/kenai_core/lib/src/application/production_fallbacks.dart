@@ -103,6 +103,7 @@ final class ArmeniaMvpServerRepository implements ServerRepository {
     protocols: const <VpnProtocol>{
       VpnProtocol.wireGuard,
       VpnProtocol.amneziaWg,
+      VpnProtocol.vlessReality,
     },
     status: ServerStatus(
       operational: ServerOperationalStatus.operational,

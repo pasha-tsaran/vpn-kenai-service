@@ -6,8 +6,9 @@ use std::{
 };
 
 use vpn_contracts::{
-    decode_amneziawg_profile, decode_wireguard_profile, encode_amneziawg_profile,
-    encode_wireguard_profile, AmneziaWgProfile, WireGuardProfile,
+    decode_amneziawg_profile, decode_vless_profile, decode_wireguard_profile,
+    encode_amneziawg_profile, encode_vless_profile, encode_wireguard_profile, AmneziaWgProfile,
+    VlessRealityProfile, WireGuardProfile,
 };
 use vpn_service_core::{CommandError, ProfileVault};
 use windows_sys::Win32::{
@@ -154,6 +155,26 @@ impl ProfileVault for DpapiProfileVault {
         profile
     }
 
+    fn store_vless(&mut self, profile: &VlessRealityProfile) -> Result<String, CommandError> {
+        let mut plaintext =
+            encode_vless_profile(profile).map_err(|_| CommandError::InvalidProfile)?;
+        let encrypted = protect(&plaintext).map_err(|_| CommandError::ProfileStoreUnavailable);
+        plaintext.fill(0);
+        store_encrypted(self, "xray-", &encrypted?)
+    }
+
+    fn load_vless(&self, profile_id: &str) -> Result<VlessRealityProfile, CommandError> {
+        if !profile_id.starts_with("xray-") {
+            return Err(CommandError::ProfileNotFound);
+        }
+        let encrypted = read_encrypted(self, profile_id)?;
+        let mut plaintext =
+            unprotect(&encrypted).map_err(|_| CommandError::ProfileStoreUnavailable)?;
+        let profile = decode_vless_profile(&plaintext).map_err(|_| CommandError::InvalidProfile);
+        plaintext.fill(0);
+        profile
+    }
+
     fn delete(&mut self, profile_id: &str) -> Result<(), CommandError> {
         let path = self.path(profile_id)?;
         match fs::remove_file(path) {
@@ -203,6 +224,46 @@ fn protect(plaintext: &[u8]) -> io::Result<Vec<u8>> {
     // SAFETY: the output buffer is owned by LocalAlloc and released once.
     unsafe { LocalFree(output.pbData.cast::<c_void>()) };
     Ok(bytes)
+}
+
+fn store_encrypted(
+    vault: &DpapiProfileVault,
+    prefix: &str,
+    encrypted: &[u8],
+) -> Result<String, CommandError> {
+    for _ in 0..8 {
+        let profile_id =
+            random_handle(prefix).map_err(|_| CommandError::ProfileStoreUnavailable)?;
+        let path = vault.path(&profile_id)?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                if file
+                    .write_all(encrypted)
+                    .and_then(|()| file.sync_all())
+                    .is_err()
+                {
+                    let _ = fs::remove_file(path);
+                    return Err(CommandError::ProfileStoreUnavailable);
+                }
+                return Ok(profile_id);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(CommandError::ProfileStoreUnavailable),
+        }
+    }
+    Err(CommandError::ProfileStoreUnavailable)
+}
+
+fn read_encrypted(vault: &DpapiProfileVault, profile_id: &str) -> Result<Vec<u8>, CommandError> {
+    fs::read(vault.path(profile_id)?).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => CommandError::ProfileNotFound,
+        _ => CommandError::ProfileStoreUnavailable,
+    })
 }
 
 fn unprotect(encrypted: &[u8]) -> io::Result<Vec<u8>> {
@@ -271,7 +332,8 @@ fn random_handle(prefix: &str) -> io::Result<String> {
 
 fn valid_handle(value: &str) -> bool {
     ((value.len() == 35 && value.starts_with("wg-"))
-        || (value.len() == 36 && value.starts_with("awg-")))
+        || (value.len() == 36 && value.starts_with("awg-"))
+        || (value.len() == 37 && value.starts_with("xray-")))
         && value[value.find('-').unwrap_or(0) + 1..]
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit())
@@ -323,6 +385,7 @@ mod tests {
         let handle = random_handle("wg-").expect("CSPRNG");
         assert!(valid_handle(&handle));
         assert!(valid_handle(&random_handle("awg-").expect("CSPRNG")));
+        assert!(valid_handle(&random_handle("xray-").expect("CSPRNG")));
         assert!(!valid_handle("../profile"));
         assert!(!valid_handle("wg-not-hex"));
     }

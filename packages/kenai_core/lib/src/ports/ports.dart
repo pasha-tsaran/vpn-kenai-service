@@ -19,6 +19,7 @@ abstract interface class SecureStorage {
 abstract interface class VpnProfileProvisioner {
   Future<String> provisionWireGuard(String configuration);
   Future<String> provisionAmneziaWg(String configuration);
+  Future<String> provisionVlessReality(String configuration);
   Future<void> deleteProfile(String profileId);
 }
 

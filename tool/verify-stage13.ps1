@@ -23,7 +23,7 @@ function Require-Text([string]$Path, [string]$Pattern) {
     $Resolved = Join-Path $RepoRoot $Path
     if (-not (Select-String -LiteralPath $Resolved -Pattern $Pattern -Quiet)) { throw "Missing stage 13 marker: $Path" }
 }
-Require-Text 'crates/vpn_contracts/src/lib.rs' 'CONTRACT_VERSION: u32 = 3'
+Require-Text 'crates/vpn_contracts/src/lib.rs' 'CONTRACT_VERSION: u32 = [34]'
 Require-Text 'services/windows_vpn_service/src/amneziawg_engine.rs' 'AmneziaWGTunnel\$KenaiAwg'
 Require-Text 'services/windows_vpn_service/src/amneziawg_engine.rs' '"/tunnelservice"'
 Require-Text 'services/windows_vpn_service/src/windows_backend.rs' 'self\.wireguard\.disconnect'

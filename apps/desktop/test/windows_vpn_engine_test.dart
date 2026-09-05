@@ -78,6 +78,7 @@ void main() {
     expect(engine.supportedProtocols, <VpnProtocol>{
       VpnProtocol.wireGuard,
       VpnProtocol.amneziaWg,
+      VpnProtocol.vlessReality,
     });
     expect(
       engine.capabilitiesFor(VpnProtocol.wireGuard).supportsKillSwitch,
@@ -110,6 +111,28 @@ void main() {
         containsAllInOrder(_VpnTransport.awgProfileHandle.codeUnits));
     expect(transport.lastRequest.last, 0);
     expect(transport.lastRequest[transport.lastRequest.length - 2], 2);
+  });
+
+  test('connects VLESS with its separate Xray handle and protocol', () async {
+    await _activateStorage(storage);
+    await storage.write(
+      key: SecureAccountStorageKeys.vlessProfileHandle,
+      value: _VpnTransport.xrayProfileHandle,
+    );
+    await engine.connect(const ConnectionRequest(
+      operationId: 'connect-xray',
+      profile: VpnProfile(
+        id: 'ui-xray',
+        deviceId: 'windows-device',
+        serverId: 'armenia-1',
+        protocol: VpnProtocol.vlessReality,
+      ),
+      killSwitch: false,
+    ));
+    expect(transport.lastRequest,
+        containsAllInOrder(_VpnTransport.xrayProfileHandle.codeUnits));
+    expect(transport.lastRequest.last, 0);
+    expect(transport.lastRequest[transport.lastRequest.length - 2], 3);
   });
 }
 
@@ -146,6 +169,8 @@ ConnectionRequest _request() => const ConnectionRequest(
 final class _VpnTransport implements ProfileIpcTransport {
   static const String profileHandle = 'wg-00112233445566778899aabbccddeeff';
   static const String awgProfileHandle = 'awg-00112233445566778899aabbccddeeff';
+  static const String xrayProfileHandle =
+      'xray-00112233445566778899aabbccddeeff';
   final List<int> opcodes = <int>[];
   Uint8List lastRequest = Uint8List(0);
   bool connected = false;

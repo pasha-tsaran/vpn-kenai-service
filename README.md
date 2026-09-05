@@ -8,8 +8,8 @@ Windows-first, cross-platform-ready client scaffold for Kenai VPN.
 Этапы 0–9 включают архитектурное решение, доменные модели, ports,
 детерминированные mocks, Flutter-навигацию, экраны «Серверы», «Аккаунт» и
 «Тарифы», минимальную Windows-службу, защищённый типизированный IPC и
-production HTTPS-активацию, реальный WireGuard for Windows и AmneziaWG 2.0.
-Release-клиент создаёт WireGuard- или AmneziaWG-туннель через системную службу, но пока не
+production HTTPS-активацию, реальный WireGuard for Windows, AmneziaWG 2.0 и
+VLESS + REALITY/Xray. Release-клиент создаёт туннель выбранного протокола через системную службу, но пока не
 является готовым установщиком и не проводит оплату. HTTPS-клиент
 активации обращается к production API только в release-сборке с явно заданным
 `KENAI_API_BASE_URL`.
@@ -18,7 +18,7 @@ Release-клиент создаёт WireGuard- или AmneziaWG-туннель �
 
 - Flutter/Dart: presentation, navigation и непривилегированные use cases.
 - Rust: общий service contract/state machine и привилегированная Windows-служба.
-- WireGuard и AmneziaWG 2.0 реализованы отдельными адаптерами; Xray добавляется следующим этапом.
+- WireGuard, AmneziaWG 2.0 и VLESS + REALITY/Xray реализованы отдельными адаптерами.
 - Системная служба, а не UI, владеет tunnel lifecycle, routes и DNS.
 - Секреты доступны только через реализацию `SecureStorage` для конкретной ОС.
 
@@ -53,7 +53,7 @@ crates/vpn_contracts/         Versioned service messages
 crates/vpn_service_core/      Pure finite-state machine
 services/windows_vpn_service/ Windows SCM host and secured local named pipe
 apps/desktop/windows/         Standard Flutter Windows runner
-proto/                        Reference schema; Rust wire codec is authoritative for v2
+proto/                        Reference schema; Rust wire codec is authoritative for v4
 docs/                         Architecture and API inventory
 tool/                         Bootstrap and boundary verification
 ```
@@ -93,6 +93,7 @@ powershell -NoProfile -File tool/verify-stage10.ps1
 powershell -NoProfile -File tool/verify-stage11.ps1
 powershell -NoProfile -File tool/verify-stage12.ps1
 powershell -NoProfile -File tool/verify-stage13.ps1
+powershell -NoProfile -File tool/verify-stage14.ps1
 ```
 
 Stage 10 adds strict WireGuard configuration parsing plus typed profile
@@ -115,7 +116,11 @@ Stage 13 adds the separately pinned, signed AmneziaWG Windows 2.0.0 engine.
 Activation provisions its AWG-only fields through IPC v3 into the service DPAPI
 vault; the GUI retains only an opaque handle. The service owns its fixed SCM
 tunnel lifecycle, DNS/routes, cleanup, recovery and safe traffic statistics.
-VLESS credentials remain in OS secure storage until stage 14.
+Stage 14 adds the separately pinned Xray-core VLESS + REALITY engine through
+IPC v4. The service owns its TUN routes, DNS, fixed process lifecycle and
+DPAPI-encrypted profile. The GUI retains only an opaque handle. The upstream
+Xray executable is not Authenticode-signed; its official-release provenance
+and exact hashes are documented and enforced instead.
 
 Запуск mock UI после bootstrap:
 

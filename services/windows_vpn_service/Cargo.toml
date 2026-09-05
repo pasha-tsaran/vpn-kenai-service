@@ -21,8 +21,10 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_Security_Cryptography",
   "Win32_System_Memory",
   "Win32_System_LibraryLoader",
+  "Win32_System_JobObjects",
   "Win32_System_Pipes",
   "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
 ] }
 
 [lints.rust]

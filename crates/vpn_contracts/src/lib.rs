@@ -2,7 +2,7 @@
 
 use std::{fmt, net::IpAddr};
 
-pub const CONTRACT_VERSION: u32 = 3;
+pub const CONTRACT_VERSION: u32 = 4;
 pub const MAX_FRAME_SIZE: usize = 32 * 1024;
 const MAGIC: &[u8; 4] = b"KVPN";
 
@@ -91,6 +91,55 @@ pub struct AmneziaWgProfile {
     pub special_junk: Vec<String>,
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct VlessRealityProfile {
+    pub client_id: String,
+    pub endpoint_host: String,
+    pub endpoint_port: u16,
+    pub server_name: String,
+    pub fingerprint: String,
+    pub reality_password: String,
+    pub short_id: String,
+    pub spider_x: String,
+}
+
+impl fmt::Debug for VlessRealityProfile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("VlessRealityProfile([REDACTED])")
+    }
+}
+
+impl VlessRealityProfile {
+    /// Revalidates every VLESS/REALITY field at the privileged boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::InvalidProfile`] for values outside the exact
+    /// RAW + REALITY + Vision subset accepted by the client.
+    pub fn validate(&self) -> Result<(), FrameError> {
+        validate_uuid(&self.client_id)?;
+        validate_endpoint_host(&self.endpoint_host)?;
+        if self.endpoint_port == 0 {
+            return Err(FrameError::InvalidProfile);
+        }
+        validate_endpoint_host(&self.server_name)?;
+        if self.fingerprint != "chrome"
+            || self.reality_password.len() != 43
+            || !self
+                .reality_password
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || self.short_id.len() > 16
+            || !self.short_id.len().is_multiple_of(2)
+            || !self.short_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || self.spider_x != "/"
+        {
+            return Err(FrameError::InvalidProfile);
+        }
+        Ok(())
+    }
+}
+
 impl AmneziaWgProfile {
     /// Revalidates every base and `AmneziaWG`-specific field.
     ///
@@ -174,6 +223,12 @@ pub struct ImportAmneziaWgProfileRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportVlessRealityProfileRequest {
+    pub operation_id: String,
+    pub profile: VlessRealityProfile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlCommand {
     Status,
     Connect(ConnectRequest),
@@ -183,6 +238,7 @@ pub enum ControlCommand {
     Diagnostics,
     ImportWireGuardProfile(ImportWireGuardProfileRequest),
     ImportAmneziaWgProfile(ImportAmneziaWgProfileRequest),
+    ImportVlessRealityProfile(ImportVlessRealityProfileRequest),
     DeleteProfile {
         operation_id: String,
         profile_id: String,
@@ -318,6 +374,13 @@ pub fn encode_request(request: &RequestEnvelope) -> Result<Vec<u8>, FrameError> 
             put_amneziawg_profile(&mut body, &import.profile)?;
             8
         }
+        ControlCommand::ImportVlessRealityProfile(import) => {
+            validate_identifier(&import.operation_id)?;
+            import.profile.validate()?;
+            put_string(&mut body, &import.operation_id)?;
+            put_vless_profile(&mut body, &import.profile)?;
+            9
+        }
     };
     if body.len() + 12 > MAX_FRAME_SIZE {
         return Err(FrameError::TooLarge);
@@ -368,6 +431,18 @@ pub fn decode_request(frame: &[u8]) -> Result<RequestEnvelope, FrameError> {
     let mut cursor = Cursor::new(&frame[12..]);
     let request_id = cursor.string()?;
     validate_identifier(&request_id)?;
+    let command = decode_command(opcode, &mut cursor)?;
+    if !cursor.finished() {
+        return Err(FrameError::TrailingData);
+    }
+    Ok(RequestEnvelope {
+        contract_version: version,
+        request_id,
+        command,
+    })
+}
+
+fn decode_command(opcode: u8, cursor: &mut Cursor<'_>) -> Result<ControlCommand, FrameError> {
     let command = match opcode {
         1 => ControlCommand::Status,
         2 => {
@@ -430,16 +505,19 @@ pub fn decode_request(frame: &[u8]) -> Result<RequestEnvelope, FrameError> {
                 profile,
             })
         }
+        9 => {
+            let operation_id = cursor.string()?;
+            validate_identifier(&operation_id)?;
+            let profile = cursor.vless_profile()?;
+            profile.validate()?;
+            ControlCommand::ImportVlessRealityProfile(ImportVlessRealityProfileRequest {
+                operation_id,
+                profile,
+            })
+        }
         _ => return Err(FrameError::UnknownOperation),
     };
-    if !cursor.finished() {
-        return Err(FrameError::TrailingData);
-    }
-    Ok(RequestEnvelope {
-        contract_version: version,
-        request_id,
-        command,
-    })
+    Ok(command)
 }
 
 /// Serializes one validated profile for encryption by the privileged vault.
@@ -507,6 +585,42 @@ pub fn decode_amneziawg_profile(bytes: &[u8]) -> Result<AmneziaWgProfile, FrameE
     }
     let mut cursor = Cursor::new(&bytes[4..]);
     let profile = cursor.amneziawg_profile()?;
+    if !cursor.finished() {
+        return Err(FrameError::TrailingData);
+    }
+    profile.validate()?;
+    Ok(profile)
+}
+
+/// Serializes a validated VLESS/REALITY profile for the encrypted vault.
+///
+/// # Errors
+///
+/// Returns [`FrameError`] when validation or the size bound fails.
+pub fn encode_vless_profile(profile: &VlessRealityProfile) -> Result<Vec<u8>, FrameError> {
+    profile.validate()?;
+    let mut bytes = b"KXP1".to_vec();
+    put_vless_profile(&mut bytes, profile)?;
+    if bytes.len() > MAX_FRAME_SIZE {
+        return Err(FrameError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+/// Decodes and validates a VLESS/REALITY profile after DPAPI decryption.
+///
+/// # Errors
+///
+/// Returns [`FrameError`] for malformed, trailing, invalid, or oversized data.
+pub fn decode_vless_profile(bytes: &[u8]) -> Result<VlessRealityProfile, FrameError> {
+    if bytes.len() > MAX_FRAME_SIZE {
+        return Err(FrameError::TooLarge);
+    }
+    if !bytes.starts_with(b"KXP1") {
+        return Err(FrameError::InvalidMagic);
+    }
+    let mut cursor = Cursor::new(&bytes[4..]);
+    let profile = cursor.vless_profile()?;
     if !cursor.finished() {
         return Err(FrameError::TrailingData);
     }
@@ -784,6 +898,49 @@ fn put_amneziawg_profile(
     Ok(())
 }
 
+fn put_vless_profile(
+    target: &mut Vec<u8>,
+    profile: &VlessRealityProfile,
+) -> Result<(), FrameError> {
+    put_bounded_string(target, &profile.client_id, 36)?;
+    put_bounded_string(target, &profile.endpoint_host, 253)?;
+    target.extend_from_slice(&profile.endpoint_port.to_le_bytes());
+    put_bounded_string(target, &profile.server_name, 253)?;
+    put_bounded_string(target, &profile.fingerprint, 32)?;
+    put_bounded_string(target, &profile.reality_password, 128)?;
+    put_optional_bounded_string(target, &profile.short_id, 16)?;
+    put_long_string(target, &profile.spider_x)?;
+    Ok(())
+}
+
+fn put_optional_bounded_string(
+    target: &mut Vec<u8>,
+    value: &str,
+    maximum: usize,
+) -> Result<(), FrameError> {
+    if value.len() > maximum || value.as_bytes().contains(&0) {
+        return Err(FrameError::InvalidProfile);
+    }
+    target.push(u8::try_from(value.len()).map_err(|_| FrameError::InvalidProfile)?);
+    target.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn validate_uuid(value: &str) -> Result<(), FrameError> {
+    if value.len() != 36
+        || value.bytes().enumerate().any(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte != b'-'
+            } else {
+                !byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        return Err(FrameError::InvalidProfile);
+    }
+    Ok(())
+}
+
 fn put_long_string(target: &mut Vec<u8>, value: &str) -> Result<(), FrameError> {
     if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
         return Err(FrameError::InvalidProfile);
@@ -963,6 +1120,20 @@ impl<'a> Cursor<'a> {
         Ok(value)
     }
 
+    fn optional_bounded_string(&mut self) -> Result<String, FrameError> {
+        let length = usize::from(self.byte()?);
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(FrameError::InvalidLength)?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(FrameError::InvalidLength)?;
+        self.offset = end;
+        String::from_utf8(bytes.to_vec()).map_err(|_| FrameError::InvalidUtf8)
+    }
+
     fn string_list(&mut self, maximum: usize) -> Result<Vec<String>, FrameError> {
         let count = usize::from(self.byte()?);
         if count > maximum {
@@ -1043,6 +1214,19 @@ impl<'a> Cursor<'a> {
         })
     }
 
+    fn vless_profile(&mut self) -> Result<VlessRealityProfile, FrameError> {
+        Ok(VlessRealityProfile {
+            client_id: self.bounded_string()?,
+            endpoint_host: self.bounded_string()?,
+            endpoint_port: self.u16()?,
+            server_name: self.bounded_string()?,
+            fingerprint: self.bounded_string()?,
+            reality_password: self.bounded_string()?,
+            short_id: self.optional_bounded_string()?,
+            spider_x: self.long_string()?,
+        })
+    }
+
     const fn finished(&self) -> bool {
         self.offset == self.bytes.len()
     }
@@ -1118,6 +1302,24 @@ mod frame_tests {
         }
     }
 
+    fn vless_profile() -> VlessRealityProfile {
+        let client_id = [8_usize, 4, 4, 4, 12]
+            .iter()
+            .map(|length| "a".repeat(*length))
+            .collect::<Vec<_>>()
+            .join("-");
+        VlessRealityProfile {
+            client_id,
+            endpoint_host: "vpn.example.test".into(),
+            endpoint_port: 443,
+            server_name: "cover.example.test".into(),
+            fingerprint: "chrome".into(),
+            reality_password: "A".repeat(43),
+            short_id: "aabbccdd".into(),
+            spider_x: "/".into(),
+        }
+    }
+
     #[test]
     fn round_trips_every_allow_listed_operation() {
         for request in [
@@ -1168,6 +1370,16 @@ mod frame_tests {
                     profile: amneziawg_profile(),
                 }),
             },
+            RequestEnvelope {
+                contract_version: CONTRACT_VERSION,
+                request_id: "import-vless-1".into(),
+                command: ControlCommand::ImportVlessRealityProfile(
+                    ImportVlessRealityProfileRequest {
+                        operation_id: "provision-vless-1".into(),
+                        profile: vless_profile(),
+                    },
+                ),
+            },
         ] {
             let encoded = encode_request(&request).expect("valid request");
             assert_eq!(decode_request(&encoded), Ok(request));
@@ -1188,6 +1400,32 @@ mod frame_tests {
         let mut invalid = profile;
         invalid.junk_packet_min_size = 1024;
         invalid.junk_packet_max_size = 64;
+        assert_eq!(invalid.validate(), Err(FrameError::InvalidProfile));
+    }
+
+    #[test]
+    fn encrypted_vless_payload_codec_round_trips_and_rejects_trailing_data() {
+        let profile = vless_profile();
+        let encoded = encode_vless_profile(&profile).expect("valid VLESS profile");
+        assert_eq!(decode_vless_profile(&encoded), Ok(profile));
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert_eq!(
+            decode_vless_profile(&trailing),
+            Err(FrameError::TrailingData)
+        );
+    }
+
+    #[test]
+    fn vless_validation_and_debug_output_protect_reality_credentials() {
+        let profile = vless_profile();
+        let rendered = format!("{profile:?}");
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains(&profile.client_id));
+        assert!(!rendered.contains(&profile.reality_password));
+
+        let mut invalid = profile;
+        invalid.short_id = "abc".into();
         assert_eq!(invalid.validate(), Err(FrameError::InvalidProfile));
     }
 
