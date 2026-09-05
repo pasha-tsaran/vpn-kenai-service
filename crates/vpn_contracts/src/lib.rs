@@ -1,4 +1,6 @@
-//! Dependency-free stage-1 equivalents of the versioned protobuf contract.
+//! Bounded, versioned IPC contract shared by the GUI bridge and VPN service.
+
+use std::{fmt, net::IpAddr};
 
 pub const CONTRACT_VERSION: u32 = 1;
 pub const MAX_FRAME_SIZE: usize = 16 * 1024;
@@ -44,12 +46,86 @@ pub struct ConnectRequest {
     pub kill_switch: bool,
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct SecretKey(pub [u8; 32]);
+
+impl fmt::Debug for SecretKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SecretKey([REDACTED])")
+    }
+}
+
+impl Drop for SecretKey {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WireGuardProfile {
+    pub private_key: SecretKey,
+    pub addresses: Vec<String>,
+    pub dns_servers: Vec<IpAddr>,
+    pub peer_public_key: SecretKey,
+    pub preshared_key: Option<SecretKey>,
+    pub endpoint_host: String,
+    pub endpoint_port: u16,
+    pub allowed_ips: Vec<String>,
+    pub persistent_keepalive: Option<u16>,
+}
+
+impl WireGuardProfile {
+    /// Revalidates every field at the privileged boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::InvalidProfile`] for an invalid or unbounded
+    /// address, DNS server, endpoint, route, port, or keepalive value.
+    pub fn validate(&self) -> Result<(), FrameError> {
+        if self.private_key.0.iter().all(|byte| *byte == 0)
+            || self.peer_public_key.0.iter().all(|byte| *byte == 0)
+            || self
+                .preshared_key
+                .as_ref()
+                .is_some_and(|key| key.0.iter().all(|byte| *byte == 0))
+        {
+            return Err(FrameError::InvalidProfile);
+        }
+        validate_networks(&self.addresses, 1, 8)?;
+        if self.dns_servers.len() > 8 {
+            return Err(FrameError::InvalidProfile);
+        }
+        validate_endpoint_host(&self.endpoint_host)?;
+        if self.endpoint_port == 0 {
+            return Err(FrameError::InvalidProfile);
+        }
+        validate_networks(&self.allowed_ips, 1, 32)?;
+        if self.persistent_keepalive == Some(0) {
+            return Err(FrameError::InvalidProfile);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportWireGuardProfileRequest {
+    pub operation_id: String,
+    pub profile: WireGuardProfile,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlCommand {
     Status,
     Connect(ConnectRequest),
-    Disconnect { operation_id: String },
+    Disconnect {
+        operation_id: String,
+    },
     Diagnostics,
+    ImportWireGuardProfile(ImportWireGuardProfileRequest),
+    DeleteProfile {
+        operation_id: String,
+        profile_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,6 +158,7 @@ pub enum FrameError {
     InvalidProtocol,
     InvalidBoolean,
     TrailingData,
+    InvalidProfile,
 }
 
 /// Returns the complete frame size declared by a 12-byte header.
@@ -146,6 +223,23 @@ pub fn encode_request(request: &RequestEnvelope) -> Result<Vec<u8>, FrameError> 
             3
         }
         ControlCommand::Diagnostics => 4,
+        ControlCommand::ImportWireGuardProfile(import) => {
+            validate_identifier(&import.operation_id)?;
+            import.profile.validate()?;
+            put_string(&mut body, &import.operation_id)?;
+            put_profile(&mut body, &import.profile)?;
+            5
+        }
+        ControlCommand::DeleteProfile {
+            operation_id,
+            profile_id,
+        } => {
+            validate_identifier(operation_id)?;
+            validate_identifier(profile_id)?;
+            put_string(&mut body, operation_id)?;
+            put_string(&mut body, profile_id)?;
+            6
+        }
     };
     if body.len() + 12 > MAX_FRAME_SIZE {
         return Err(FrameError::TooLarge);
@@ -227,6 +321,26 @@ pub fn decode_request(frame: &[u8]) -> Result<RequestEnvelope, FrameError> {
             ControlCommand::Disconnect { operation_id }
         }
         4 => ControlCommand::Diagnostics,
+        5 => {
+            let operation_id = cursor.string()?;
+            validate_identifier(&operation_id)?;
+            let profile = cursor.profile()?;
+            profile.validate()?;
+            ControlCommand::ImportWireGuardProfile(ImportWireGuardProfileRequest {
+                operation_id,
+                profile,
+            })
+        }
+        6 => {
+            let operation_id = cursor.string()?;
+            let profile_id = cursor.string()?;
+            validate_identifier(&operation_id)?;
+            validate_identifier(&profile_id)?;
+            ControlCommand::DeleteProfile {
+                operation_id,
+                profile_id,
+            }
+        }
         _ => return Err(FrameError::UnknownOperation),
     };
     if !cursor.finished() {
@@ -237,6 +351,42 @@ pub fn decode_request(frame: &[u8]) -> Result<RequestEnvelope, FrameError> {
         request_id,
         command,
     })
+}
+
+/// Serializes one validated profile for encryption by the privileged vault.
+///
+/// # Errors
+///
+/// Returns [`FrameError`] if the profile is invalid or exceeds the bound.
+pub fn encode_wireguard_profile(profile: &WireGuardProfile) -> Result<Vec<u8>, FrameError> {
+    profile.validate()?;
+    let mut bytes = b"KWP1".to_vec();
+    put_profile(&mut bytes, profile)?;
+    if bytes.len() > MAX_FRAME_SIZE {
+        return Err(FrameError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+/// Decodes a profile only after its DPAPI envelope has been opened.
+///
+/// # Errors
+///
+/// Returns [`FrameError`] for malformed, trailing, invalid, or oversized data.
+pub fn decode_wireguard_profile(bytes: &[u8]) -> Result<WireGuardProfile, FrameError> {
+    if bytes.len() > MAX_FRAME_SIZE {
+        return Err(FrameError::TooLarge);
+    }
+    if !bytes.starts_with(b"KWP1") {
+        return Err(FrameError::InvalidMagic);
+    }
+    let mut cursor = Cursor::new(&bytes[4..]);
+    let profile = cursor.profile()?;
+    if !cursor.finished() {
+        return Err(FrameError::TrailingData);
+    }
+    profile.validate()?;
+    Ok(profile)
 }
 
 /// Encodes one service response without diagnostic text or platform errors.
@@ -414,6 +564,96 @@ fn put_string(target: &mut Vec<u8>, value: &str) -> Result<(), FrameError> {
     Ok(())
 }
 
+fn put_profile(target: &mut Vec<u8>, profile: &WireGuardProfile) -> Result<(), FrameError> {
+    target.extend_from_slice(&profile.private_key.0);
+    put_string_list(target, &profile.addresses)?;
+    let dns: Vec<String> = profile
+        .dns_servers
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    put_string_list(target, &dns)?;
+    target.extend_from_slice(&profile.peer_public_key.0);
+    match &profile.preshared_key {
+        Some(key) => {
+            target.push(1);
+            target.extend_from_slice(&key.0);
+        }
+        None => target.push(0),
+    }
+    put_bounded_string(target, &profile.endpoint_host, 253)?;
+    target.extend_from_slice(&profile.endpoint_port.to_le_bytes());
+    put_string_list(target, &profile.allowed_ips)?;
+    match profile.persistent_keepalive {
+        Some(seconds) => {
+            target.push(1);
+            target.extend_from_slice(&seconds.to_le_bytes());
+        }
+        None => target.push(0),
+    }
+    Ok(())
+}
+
+fn put_string_list(target: &mut Vec<u8>, values: &[String]) -> Result<(), FrameError> {
+    let count = u8::try_from(values.len()).map_err(|_| FrameError::InvalidProfile)?;
+    target.push(count);
+    for value in values {
+        put_bounded_string(target, value, 253)?;
+    }
+    Ok(())
+}
+
+fn put_bounded_string(target: &mut Vec<u8>, value: &str, maximum: usize) -> Result<(), FrameError> {
+    if value.is_empty() || value.len() > maximum || value.as_bytes().contains(&0) {
+        return Err(FrameError::InvalidProfile);
+    }
+    let length = u8::try_from(value.len()).map_err(|_| FrameError::InvalidProfile)?;
+    target.push(length);
+    target.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn validate_networks(values: &[String], minimum: usize, maximum: usize) -> Result<(), FrameError> {
+    if values.len() < minimum || values.len() > maximum {
+        return Err(FrameError::InvalidProfile);
+    }
+    for value in values {
+        let Some((address, prefix)) = value.split_once('/') else {
+            return Err(FrameError::InvalidProfile);
+        };
+        let address: IpAddr = address.parse().map_err(|_| FrameError::InvalidProfile)?;
+        let prefix: u8 = prefix.parse().map_err(|_| FrameError::InvalidProfile)?;
+        let maximum_prefix = if address.is_ipv4() { 32 } else { 128 };
+        if prefix > maximum_prefix {
+            return Err(FrameError::InvalidProfile);
+        }
+    }
+    Ok(())
+}
+
+fn validate_endpoint_host(value: &str) -> Result<(), FrameError> {
+    if value.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    if value.is_empty()
+        || value.len() > 253
+        || value.starts_with('.')
+        || value.ends_with('.')
+        || value.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return Err(FrameError::InvalidProfile);
+    }
+    Ok(())
+}
+
 struct Cursor<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -445,6 +685,74 @@ impl<'a> Cursor<'a> {
             .ok_or(FrameError::InvalidLength)?;
         self.offset = end;
         String::from_utf8(bytes.to_vec()).map_err(|_| FrameError::InvalidUtf8)
+    }
+
+    fn bytes<const N: usize>(&mut self) -> Result<[u8; N], FrameError> {
+        let end = self
+            .offset
+            .checked_add(N)
+            .ok_or(FrameError::InvalidLength)?;
+        let source = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(FrameError::InvalidLength)?;
+        self.offset = end;
+        source.try_into().map_err(|_| FrameError::InvalidLength)
+    }
+
+    fn u16(&mut self) -> Result<u16, FrameError> {
+        Ok(u16::from_le_bytes(self.bytes()?))
+    }
+
+    fn bounded_string(&mut self) -> Result<String, FrameError> {
+        let value = self.string()?;
+        if value.is_empty() || value.as_bytes().contains(&0) {
+            return Err(FrameError::InvalidProfile);
+        }
+        Ok(value)
+    }
+
+    fn string_list(&mut self, maximum: usize) -> Result<Vec<String>, FrameError> {
+        let count = usize::from(self.byte()?);
+        if count > maximum {
+            return Err(FrameError::InvalidProfile);
+        }
+        (0..count).map(|_| self.bounded_string()).collect()
+    }
+
+    fn profile(&mut self) -> Result<WireGuardProfile, FrameError> {
+        let private_key = SecretKey(self.bytes()?);
+        let addresses = self.string_list(8)?;
+        let dns_servers = self
+            .string_list(8)?
+            .into_iter()
+            .map(|value| value.parse().map_err(|_| FrameError::InvalidProfile))
+            .collect::<Result<Vec<IpAddr>, FrameError>>()?;
+        let peer_public_key = SecretKey(self.bytes()?);
+        let preshared_key = match self.byte()? {
+            0 => None,
+            1 => Some(SecretKey(self.bytes()?)),
+            _ => return Err(FrameError::InvalidBoolean),
+        };
+        let endpoint_host = self.bounded_string()?;
+        let endpoint_port = self.u16()?;
+        let allowed_ips = self.string_list(32)?;
+        let persistent_keepalive = match self.byte()? {
+            0 => None,
+            1 => Some(self.u16()?),
+            _ => return Err(FrameError::InvalidBoolean),
+        };
+        Ok(WireGuardProfile {
+            private_key,
+            addresses,
+            dns_servers,
+            peer_public_key,
+            preshared_key,
+            endpoint_host,
+            endpoint_port,
+            allowed_ips,
+            persistent_keepalive,
+        })
     }
 
     const fn finished(&self) -> bool {
@@ -490,6 +798,20 @@ mod frame_tests {
         }
     }
 
+    fn wireguard_profile() -> WireGuardProfile {
+        WireGuardProfile {
+            private_key: SecretKey([7; 32]),
+            addresses: vec!["10.8.0.2/32".into(), "fd00::2/128".into()],
+            dns_servers: vec!["1.1.1.1".parse().expect("IP")],
+            peer_public_key: SecretKey([9; 32]),
+            preshared_key: Some(SecretKey([11; 32])),
+            endpoint_host: "vpn.example.test".into(),
+            endpoint_port: 51820,
+            allowed_ips: vec!["0.0.0.0/0".into(), "::/0".into()],
+            persistent_keepalive: Some(25),
+        }
+    }
+
     #[test]
     fn round_trips_every_allow_listed_operation() {
         for request in [
@@ -510,6 +832,22 @@ mod frame_tests {
                 contract_version: CONTRACT_VERSION,
                 request_id: "diagnostics-1".into(),
                 command: ControlCommand::Diagnostics,
+            },
+            RequestEnvelope {
+                contract_version: CONTRACT_VERSION,
+                request_id: "import-1".into(),
+                command: ControlCommand::ImportWireGuardProfile(ImportWireGuardProfileRequest {
+                    operation_id: "provision-1".into(),
+                    profile: wireguard_profile(),
+                }),
+            },
+            RequestEnvelope {
+                contract_version: CONTRACT_VERSION,
+                request_id: "delete-1".into(),
+                command: ControlCommand::DeleteProfile {
+                    operation_id: "cleanup-1".into(),
+                    profile_id: "wg-0123456789abcdef".into(),
+                },
             },
         ] {
             let encoded = encode_request(&request).expect("valid request");
@@ -582,5 +920,33 @@ mod frame_tests {
                 Err(FrameError::InvalidIdentifier)
             );
         }
+    }
+
+    #[test]
+    fn profile_validation_rejects_routes_endpoints_and_empty_keepalive() {
+        let mut profile = wireguard_profile();
+        profile.allowed_ips = vec!["0.0.0.0/33".into()];
+        assert_eq!(profile.validate(), Err(FrameError::InvalidProfile));
+
+        let mut profile = wireguard_profile();
+        profile.endpoint_host = "bad host;command".into();
+        assert_eq!(profile.validate(), Err(FrameError::InvalidProfile));
+
+        let mut profile = wireguard_profile();
+        profile.persistent_keepalive = Some(0);
+        assert_eq!(profile.validate(), Err(FrameError::InvalidProfile));
+
+        let mut profile = wireguard_profile();
+        profile.private_key = SecretKey([0; 32]);
+        assert_eq!(profile.validate(), Err(FrameError::InvalidProfile));
+    }
+
+    #[test]
+    fn secret_debug_output_is_always_redacted() {
+        let profile = wireguard_profile();
+        let rendered = format!("{profile:?}");
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains("7, 7, 7"));
+        assert!(!rendered.contains("11, 11, 11"));
     }
 }

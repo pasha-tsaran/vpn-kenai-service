@@ -1,6 +1,19 @@
 import 'package:kenai_core/kenai_core.dart';
 import 'package:test/test.dart';
 
+final class _RecordingProvisioner implements VpnProfileProvisioner {
+  String? deleted;
+
+  @override
+  Future<String> provisionWireGuard(String configuration) async =>
+      'wg-00112233445566778899aabbccddeeff';
+
+  @override
+  Future<void> deleteProfile(String profileId) async {
+    deleted = profileId;
+  }
+}
+
 void main() {
   group('account activation', () {
     test('validates and masks a 12-digit activation key', () {
@@ -93,6 +106,31 @@ void main() {
       expect(await storage.read('vpn.wireguard'), 'wireguard-profile');
       expect(await storage.read('vpn.amneziawg'), isNull);
       expect(await storage.read('vpn.vless'), isNull);
+    });
+
+    test(
+        'production-style provisioning stores only a handle and deletes it on sign out',
+        () async {
+      final InMemorySecureStorage storage = InMemorySecureStorage();
+      final _RecordingProvisioner provisioner = _RecordingProvisioner();
+      final SecureAccountRepository repository = SecureAccountRepository(
+        apiClient: MockActivationApiClient(),
+        secureStorage: storage,
+        profileProvisioner: provisioner,
+      );
+
+      await repository.activate(ActivationKey.parse(_testActivationKey()));
+
+      expect(await storage.read('vpn.wireguard'), isNull);
+      expect(
+        await storage.read('vpn.profile_handle'),
+        'wg-00112233445566778899aabbccddeeff',
+      );
+
+      await repository.signOut();
+
+      expect(provisioner.deleted, 'wg-00112233445566778899aabbccddeeff');
+      expect(await storage.read('vpn.profile_handle'), isNull);
     });
   });
 

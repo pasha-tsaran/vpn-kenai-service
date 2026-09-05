@@ -23,6 +23,11 @@ mod windows_service_host {
         include!("ipc.rs");
     }
 
+    #[allow(unsafe_code)]
+    mod profile_vault {
+        include!("profile_vault.rs");
+    }
+
     const SERVICE_NAME: &str = "KenaiVpnService";
 
     define_windows_service!(ffi_service_main, service_main);

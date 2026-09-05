@@ -7,17 +7,21 @@ final class SecureAccountRepository implements AccountRepository {
   SecureAccountRepository({
     required ActivationApiClient apiClient,
     required SecureStorage secureStorage,
+    VpnProfileProvisioner? profileProvisioner,
   })  : _apiClient = apiClient,
-        _secureStorage = secureStorage;
+        _secureStorage = secureStorage,
+        _profileProvisioner = profileProvisioner;
 
   static const String _activationKey = 'account.activation_key';
   static const String _session = 'account.session';
   static const String _wireGuard = 'vpn.wireguard';
   static const String _amneziaWg = 'vpn.amneziawg';
   static const String _vless = 'vpn.vless';
+  static const String _profileHandle = 'vpn.profile_handle';
 
   final ActivationApiClient _apiClient;
   final SecureStorage _secureStorage;
+  final VpnProfileProvisioner? _profileProvisioner;
 
   @override
   bool get isMock => _apiClient.isMock;
@@ -30,15 +34,25 @@ final class SecureAccountRepository implements AccountRepository {
       subscription: result.subscription,
       activationKeyMask: activationKey.masked,
     );
+    String? provisionedHandle;
     try {
       await _secureStorage.write(
         key: _activationKey,
         value: activationKey.value,
       );
-      await _writeCredential(
-        _wireGuard,
-        result.vpnCredentials[VpnProtocol.wireGuard],
-      );
+      final String? wireGuard = result.vpnCredentials[VpnProtocol.wireGuard];
+      if (_profileProvisioner != null && wireGuard != null) {
+        provisionedHandle =
+            await _profileProvisioner.provisionWireGuard(wireGuard);
+        await _secureStorage.write(
+          key: _profileHandle,
+          value: provisionedHandle,
+        );
+        await _secureStorage.delete(_wireGuard);
+      } else {
+        await _writeCredential(_wireGuard, wireGuard);
+        await _secureStorage.delete(_profileHandle);
+      }
       await _writeCredential(
         _amneziaWg,
         result.vpnCredentials[VpnProtocol.amneziaWg],
@@ -50,6 +64,14 @@ final class SecureAccountRepository implements AccountRepository {
       await _secureStorage.write(key: _session, value: _encode(session));
       return session;
     } on Object {
+      if (provisionedHandle != null) {
+        try {
+          await _profileProvisioner?.deleteProfile(provisionedHandle);
+        } on Object {
+          // Preserve the original activation/storage failure. The service uses
+          // opaque encrypted files; a later activation replaces stale state.
+        }
+      }
       await _clearAccountData();
       rethrow;
     }
@@ -71,7 +93,13 @@ final class SecureAccountRepository implements AccountRepository {
   Future<String?> revealActivationKey() => _secureStorage.read(_activationKey);
 
   @override
-  Future<void> signOut() => _clearAccountData();
+  Future<void> signOut() async {
+    final String? profileHandle = await _secureStorage.read(_profileHandle);
+    if (profileHandle != null && _profileProvisioner != null) {
+      await _profileProvisioner.deleteProfile(profileHandle);
+    }
+    await _clearAccountData();
+  }
 
   Future<void> _clearAccountData() async {
     for (final String key in <String>[
@@ -80,6 +108,7 @@ final class SecureAccountRepository implements AccountRepository {
       _wireGuard,
       _amneziaWg,
       _vless,
+      _profileHandle,
     ]) {
       await _secureStorage.delete(key);
     }

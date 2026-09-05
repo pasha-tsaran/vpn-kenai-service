@@ -44,3 +44,5 @@ jobs:
         run: ./tool/verify-stage7.ps1
       - shell: powershell
         run: ./tool/verify-stage9.ps1
+      - shell: powershell
+        run: ./tool/verify-stage10.ps1

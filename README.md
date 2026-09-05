@@ -87,7 +87,14 @@ cargo test --workspace
 powershell -NoProfile -File tool/verify-stage1.ps1
 powershell -NoProfile -File tool/verify-stage7.ps1
 powershell -NoProfile -File tool/verify-stage9.ps1
+powershell -NoProfile -File tool/verify-stage10.ps1
 ```
+
+Stage 10 adds strict WireGuard configuration parsing plus typed profile
+provisioning into the Windows service. Profiles are stored only as
+DPAPI-encrypted blobs under a SYSTEM/Administrators-only directory and are
+addressed by random opaque handles. The real WireGuard tunnel engine remains
+disabled until stage 11.
 
 Запуск mock UI после bootstrap:
 

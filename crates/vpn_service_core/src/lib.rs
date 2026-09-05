@@ -5,7 +5,8 @@
 use std::collections::{HashSet, VecDeque};
 
 use vpn_contracts::{
-    ConnectRequest, ConnectionPhase, ControlCommand, RequestEnvelope, StateEvent, CONTRACT_VERSION,
+    ConnectRequest, ConnectionPhase, ControlCommand, RequestEnvelope, StateEvent, WireGuardProfile,
+    CONTRACT_VERSION,
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -16,6 +17,32 @@ pub enum CommandError {
     EmptyProfileId,
     InvalidFailurePhase,
     UnauthorizedCaller,
+    InvalidProfile,
+    ProfileNotFound,
+    ProfileStoreUnavailable,
+}
+
+pub trait ProfileVault {
+    fn store_wireguard(&mut self, profile: &WireGuardProfile) -> Result<String, CommandError>;
+    fn load_wireguard(&self, profile_id: &str) -> Result<WireGuardProfile, CommandError>;
+    fn delete(&mut self, profile_id: &str) -> Result<(), CommandError>;
+}
+
+#[derive(Debug, Default)]
+pub struct UnavailableProfileVault;
+
+impl ProfileVault for UnavailableProfileVault {
+    fn store_wireguard(&mut self, _profile: &WireGuardProfile) -> Result<String, CommandError> {
+        Err(CommandError::ProfileStoreUnavailable)
+    }
+
+    fn load_wireguard(&self, _profile_id: &str) -> Result<WireGuardProfile, CommandError> {
+        Err(CommandError::ProfileStoreUnavailable)
+    }
+
+    fn delete(&mut self, _profile_id: &str) -> Result<(), CommandError> {
+        Err(CommandError::ProfileStoreUnavailable)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,15 +70,32 @@ pub struct CommandOutcome {
     pub code: &'static str,
 }
 
-#[derive(Debug, Default)]
-pub struct ServiceCommandProcessor {
+#[derive(Debug)]
+pub struct ServiceCommandProcessor<V = UnavailableProfileVault> {
     machine: ConnectionStateMachine,
     recent_ids: VecDeque<String>,
     recent_id_set: HashSet<String>,
+    vault: V,
 }
 
-impl ServiceCommandProcessor {
+impl Default for ServiceCommandProcessor<UnavailableProfileVault> {
+    fn default() -> Self {
+        Self::new(UnavailableProfileVault)
+    }
+}
+
+impl<V: ProfileVault> ServiceCommandProcessor<V> {
     const MAX_RECENT_REQUESTS: usize = 256;
+
+    #[must_use]
+    pub fn new(vault: V) -> Self {
+        Self {
+            machine: ConnectionStateMachine::default(),
+            recent_ids: VecDeque::new(),
+            recent_id_set: HashSet::new(),
+            vault,
+        }
+    }
 
     pub fn process(
         &mut self,
@@ -66,9 +110,9 @@ impl ServiceCommandProcessor {
         }
         self.remember(request.request_id.clone());
 
-        let code = match request.command {
-            ControlCommand::Status => "OK",
-            ControlCommand::Diagnostics => "DIAGNOSTICS_REDACTED",
+        let (code, returned_profile_id) = match request.command {
+            ControlCommand::Status => ("OK", None),
+            ControlCommand::Diagnostics => ("DIAGNOSTICS_REDACTED", None),
             ControlCommand::Connect(connect) => {
                 if self.machine.state().phase.is_failure() {
                     self.machine.reset_failure()?;
@@ -77,7 +121,7 @@ impl ServiceCommandProcessor {
                 self.machine.mark_validated()?;
                 self.machine
                     .fail(ConnectionPhase::Error, "ENGINE_NOT_INSTALLED")?;
-                "ENGINE_NOT_INSTALLED"
+                ("ENGINE_NOT_INSTALLED", None)
             }
             ControlCommand::Disconnect { operation_id } => {
                 if self.machine.state().phase.is_failure() {
@@ -86,12 +130,43 @@ impl ServiceCommandProcessor {
                     self.machine.begin_disconnect(&operation_id)?;
                     self.machine.mark_disconnected()?;
                 }
-                "DISCONNECTED"
+                ("DISCONNECTED", None)
+            }
+            ControlCommand::ImportWireGuardProfile(import) => {
+                if import.operation_id.trim().is_empty() {
+                    return Err(CommandError::EmptyOperationId);
+                }
+                import
+                    .profile
+                    .validate()
+                    .map_err(|_| CommandError::InvalidProfile)?;
+                let profile_id = self.vault.store_wireguard(&import.profile)?;
+                if !valid_profile_id(&profile_id) {
+                    return Err(CommandError::ProfileStoreUnavailable);
+                }
+                ("PROFILE_STORED", Some(profile_id))
+            }
+            ControlCommand::DeleteProfile {
+                operation_id,
+                profile_id,
+            } => {
+                if operation_id.trim().is_empty() {
+                    return Err(CommandError::EmptyOperationId);
+                }
+                if profile_id.trim().is_empty() {
+                    return Err(CommandError::EmptyProfileId);
+                }
+                self.vault.delete(&profile_id)?;
+                ("PROFILE_DELETED", None)
             }
         };
+        let mut state = self.machine.state().clone();
+        if returned_profile_id.is_some() {
+            state.profile_id = returned_profile_id;
+        }
         Ok(CommandOutcome {
             request_id: request.request_id,
-            state: self.machine.state().clone(),
+            state,
             code,
         })
     }
@@ -105,6 +180,14 @@ impl ServiceCommandProcessor {
         self.recent_id_set.insert(request_id.clone());
         self.recent_ids.push_back(request_id);
     }
+}
+
+fn valid_profile_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 #[derive(Debug, Default)]
@@ -215,7 +298,37 @@ impl ConnectionStateMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vpn_contracts::Protocol;
+    use std::net::IpAddr;
+    use vpn_contracts::{ImportWireGuardProfileRequest, Protocol, SecretKey, WireGuardProfile};
+
+    #[derive(Debug, Default)]
+    struct MemoryVault {
+        stored: bool,
+    }
+
+    impl ProfileVault for MemoryVault {
+        fn store_wireguard(&mut self, _profile: &WireGuardProfile) -> Result<String, CommandError> {
+            self.stored = true;
+            Ok("wg-0011223344556677".into())
+        }
+
+        fn load_wireguard(&self, _profile_id: &str) -> Result<WireGuardProfile, CommandError> {
+            if self.stored {
+                Ok(profile())
+            } else {
+                Err(CommandError::ProfileNotFound)
+            }
+        }
+
+        fn delete(&mut self, profile_id: &str) -> Result<(), CommandError> {
+            if self.stored && profile_id == "wg-0011223344556677" {
+                self.stored = false;
+                Ok(())
+            } else {
+                Err(CommandError::ProfileNotFound)
+            }
+        }
+    }
 
     fn request() -> ConnectRequest {
         ConnectRequest {
@@ -232,6 +345,20 @@ mod tests {
             is_authenticated: true,
             client_session_id: 4,
             allowed_session_id: 4,
+        }
+    }
+
+    fn profile() -> WireGuardProfile {
+        WireGuardProfile {
+            private_key: SecretKey([1; 32]),
+            addresses: vec!["10.0.0.2/32".into()],
+            dns_servers: vec![IpAddr::from([1, 1, 1, 1])],
+            peer_public_key: SecretKey([2; 32]),
+            preshared_key: None,
+            endpoint_host: "vpn.example.test".into(),
+            endpoint_port: 51820,
+            allowed_ips: vec!["0.0.0.0/0".into()],
+            persistent_keepalive: Some(25),
         }
     }
 
@@ -330,5 +457,46 @@ mod tests {
         assert_eq!(outcome.code, "ENGINE_NOT_INSTALLED");
         assert_eq!(outcome.state.phase, ConnectionPhase::Error);
         assert!(!outcome.state.kill_switch_active);
+    }
+
+    #[test]
+    fn provisions_an_opaque_handle_and_deletes_it_explicitly() {
+        let mut processor = ServiceCommandProcessor::new(MemoryVault::default());
+        let stored = processor
+            .process(
+                authorized(),
+                RequestEnvelope {
+                    contract_version: CONTRACT_VERSION,
+                    request_id: "import-request-1".into(),
+                    command: ControlCommand::ImportWireGuardProfile(
+                        ImportWireGuardProfileRequest {
+                            operation_id: "provision-1".into(),
+                            profile: profile(),
+                        },
+                    ),
+                },
+            )
+            .expect("profile stored");
+        assert_eq!(stored.code, "PROFILE_STORED");
+        assert_eq!(
+            stored.state.profile_id.as_deref(),
+            Some("wg-0011223344556677")
+        );
+
+        let deleted = processor
+            .process(
+                authorized(),
+                RequestEnvelope {
+                    contract_version: CONTRACT_VERSION,
+                    request_id: "delete-request-1".into(),
+                    command: ControlCommand::DeleteProfile {
+                        operation_id: "cleanup-1".into(),
+                        profile_id: "wg-0011223344556677".into(),
+                    },
+                },
+            )
+            .expect("profile deleted");
+        assert_eq!(deleted.code, "PROFILE_DELETED");
+        assert_eq!(deleted.state.profile_id, None);
     }
 }

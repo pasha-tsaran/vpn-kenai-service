@@ -8,6 +8,7 @@ import 'src/app.dart';
 import 'src/infrastructure/platform_diagnostics.dart';
 import 'src/infrastructure/platform_secure_storage.dart';
 import 'src/infrastructure/production_api.dart';
+import 'src/infrastructure/windows_profile_provisioner.dart';
 
 const bool _testServersFromEnvironment = bool.fromEnvironment(
   'KENAI_ENABLE_TEST_SERVERS',
@@ -78,6 +79,8 @@ Widget buildKenaiApp({
       accountRepository: SecureAccountRepository(
         apiClient: activationApiClient,
         secureStorage: secureStorage,
+        profileProvisioner:
+            kReleaseMode ? WindowsVpnProfileProvisioner() : null,
       ),
       vpnEngine: vpnEngine,
       serverRepository: serverRepository,

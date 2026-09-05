@@ -16,6 +16,11 @@ abstract interface class SecureStorage {
   Future<void> clear();
 }
 
+abstract interface class VpnProfileProvisioner {
+  Future<String> provisionWireGuard(String configuration);
+  Future<void> deleteProfile(String profileId);
+}
+
 abstract interface class VpnEngine {
   bool get isMock;
   Stream<VpnConnectionState> get states;

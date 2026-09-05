@@ -17,7 +17,9 @@ use vpn_contracts::{
     decode_request, declared_frame_size, encode_response, ConnectionPhase, ResponseEnvelope,
     CONTRACT_VERSION,
 };
-use vpn_service_core::{AuthorizationContext, CommandError, ServiceCommandProcessor};
+use vpn_service_core::{AuthorizationContext, CommandError, ProfileVault, ServiceCommandProcessor};
+
+use super::profile_vault::DpapiProfileVault;
 use windows_sys::Win32::{
     Foundation::LocalFree,
     Security::{
@@ -38,7 +40,7 @@ const INVALID_REQUEST_ID: &str = "invalid-request";
 
 pub async fn serve(mut shutdown: watch::Receiver<bool>) -> io::Result<()> {
     let security = PipeSecurity::new()?;
-    let mut processor = ServiceCommandProcessor::default();
+    let mut processor = ServiceCommandProcessor::new(DpapiProfileVault::system_default()?);
 
     loop {
         if *shutdown.borrow() {
@@ -70,7 +72,7 @@ pub async fn serve(mut shutdown: watch::Receiver<bool>) -> io::Result<()> {
 async fn handle_one(
     mut server: NamedPipeServer,
     authorization: AuthorizationContext,
-    processor: &mut ServiceCommandProcessor,
+    processor: &mut ServiceCommandProcessor<impl ProfileVault>,
 ) -> io::Result<()> {
     let mut header = [0_u8; HEADER_SIZE];
     if server.read_exact(&mut header).await.is_err() {
@@ -90,10 +92,10 @@ async fn handle_one(
     write_response(&mut server, response).await
 }
 
-fn process_frame(
+fn process_frame<V: ProfileVault>(
     frame: &[u8],
     authorization: AuthorizationContext,
-    processor: &mut ServiceCommandProcessor,
+    processor: &mut ServiceCommandProcessor<V>,
 ) -> ResponseEnvelope {
     let Ok(request) = decode_request(frame) else {
         return safe_error(INVALID_REQUEST_ID, "INVALID_REQUEST");
@@ -118,7 +120,10 @@ fn safe_command_error(request_id: String, error: &CommandError) -> ResponseEnvel
         CommandError::DuplicateRequest => "DUPLICATE_REQUEST",
         CommandError::EmptyOperationId
         | CommandError::EmptyProfileId
-        | CommandError::InvalidFailurePhase => "INVALID_REQUEST",
+        | CommandError::InvalidFailurePhase
+        | CommandError::InvalidProfile => "INVALID_REQUEST",
+        CommandError::ProfileNotFound => "PROFILE_NOT_FOUND",
+        CommandError::ProfileStoreUnavailable => "PROFILE_STORE_UNAVAILABLE",
         CommandError::UnauthorizedCaller => "UNAUTHORIZED",
     };
     ResponseEnvelope {
