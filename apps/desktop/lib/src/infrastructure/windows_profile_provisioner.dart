@@ -1,14 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:kenai_core/kenai_core.dart';
 
+import 'amneziawg_config_parser.dart';
 import 'wireguard_config_parser.dart';
 
-const String _pipeName = r'\\.\pipe\KenaiVpnControl-v2';
-const int _maximumFrameSize = 16 * 1024;
+const String _pipeName = r'\\.\pipe\KenaiVpnControl-v3';
+const int _maximumFrameSize = 32 * 1024;
 
 final class ProfileProvisioningException implements Exception {
   const ProfileProvisioningException(this.code);
@@ -80,13 +82,16 @@ final class WindowsVpnProfileProvisioner implements VpnProfileProvisioner {
   WindowsVpnProfileProvisioner({
     ProfileIpcTransport transport = const WindowsNamedPipeProfileTransport(),
     WireGuardConfigParser parser = const WireGuardConfigParser(),
+    AmneziaWgConfigParser amneziaWgParser = const AmneziaWgConfigParser(),
     Random? random,
   })  : _transport = transport,
         _parser = parser,
+        _amneziaWgParser = amneziaWgParser,
         _random = random ?? Random.secure();
 
   final ProfileIpcTransport _transport;
   final WireGuardConfigParser _parser;
+  final AmneziaWgConfigParser _amneziaWgParser;
   final Random _random;
 
   @override
@@ -95,6 +100,21 @@ final class WindowsVpnProfileProvisioner implements VpnProfileProvisioner {
     final String requestId = _identifier('request');
     final Uint8List response = await _transport.exchange(
       _encodeImport(requestId, _identifier('provision'), profile),
+    );
+    final VpnIpcResponse decoded = decodeVpnIpcResponse(response, requestId);
+    if (decoded.code != 'PROFILE_STORED' || decoded.profileId == null) {
+      throw ProfileProvisioningException(decoded.code);
+    }
+    return decoded.profileId!;
+  }
+
+  @override
+  Future<String> provisionAmneziaWg(String configuration) async {
+    final AmneziaWgProvisioningProfile profile =
+        _amneziaWgParser.parse(configuration);
+    final String requestId = _identifier('request');
+    final Uint8List response = await _transport.exchange(
+      _encodeAmneziaWgImport(requestId, _identifier('provision'), profile),
     );
     final VpnIpcResponse decoded = decodeVpnIpcResponse(response, requestId);
     if (decoded.code != 'PROFILE_STORED' || decoded.profileId == null) {
@@ -175,6 +195,70 @@ Uint8List _encodeDelete(
       ]),
     );
 
+Uint8List _encodeAmneziaWgImport(String requestId, String operationId,
+    AmneziaWgProvisioningProfile profile) {
+  final WireGuardProvisioningProfile wg = profile.wireGuard;
+  final BytesBuilder body = BytesBuilder(copy: false)
+    ..add(_identifierBytes(requestId))
+    ..add(_identifierBytes(operationId))
+    ..add(wg.privateKey)
+    ..add(_stringList(wg.addresses))
+    ..add(_stringList(wg.dnsServers))
+    ..add(wg.peerPublicKey);
+  if (wg.presharedKey == null) {
+    body.addByte(0);
+  } else {
+    body
+      ..addByte(1)
+      ..add(wg.presharedKey!);
+  }
+  body
+    ..add(_boundedString(wg.endpointHost))
+    ..add(_u16(wg.endpointPort))
+    ..add(_stringList(wg.allowedIps));
+  if (wg.persistentKeepalive == null) {
+    body.addByte(0);
+  } else {
+    body
+      ..addByte(1)
+      ..add(_u16(wg.persistentKeepalive!));
+  }
+  for (final int value in <int>[
+    profile.jc,
+    profile.jmin,
+    profile.jmax,
+    profile.s1,
+    profile.s2,
+    profile.s3,
+    profile.s4
+  ]) {
+    body.add(_u16(value));
+  }
+  for (final String value in <String>[
+    profile.h1,
+    profile.h2,
+    profile.h3,
+    profile.h4
+  ]) {
+    body.add(_boundedString(value));
+  }
+  body.addByte(profile.specialJunk.length);
+  for (final String value in profile.specialJunk) {
+    body.add(_longString(value));
+  }
+  return encodeVpnIpcFrame(8, body.takeBytes());
+}
+
+Uint8List _longString(String value) {
+  final Uint8List encoded = Uint8List.fromList(utf8.encode(value));
+  if (encoded.isEmpty ||
+      encoded.length > 4096 ||
+      value.runes.any((int rune) => rune < 32 || rune == 127)) {
+    throw const ProfileProvisioningException('INVALID_PROFILE');
+  }
+  return Uint8List.fromList(<int>[..._u16(encoded.length), ...encoded]);
+}
+
 Uint8List encodeVpnIpcFrame(int opcode, Uint8List body) {
   if (body.length + 12 > _maximumFrameSize) {
     throw const ProfileProvisioningException('PROFILE_TOO_LARGE');
@@ -182,7 +266,7 @@ Uint8List encodeVpnIpcFrame(int opcode, Uint8List body) {
   final Uint8List frame = Uint8List(body.length + 12);
   frame.setRange(0, 4, const <int>[0x4b, 0x56, 0x50, 0x4e]);
   ByteData.sublistView(frame)
-    ..setUint16(4, 2, Endian.little)
+    ..setUint16(4, 3, Endian.little)
     ..setUint8(6, opcode)
     ..setUint8(7, 0)
     ..setUint32(8, body.length, Endian.little);
@@ -233,7 +317,7 @@ VpnIpcResponse decodeVpnIpcResponse(
       frame[1] != 0x56 ||
       frame[2] != 0x50 ||
       frame[3] != 0x4e ||
-      data.getUint16(4, Endian.little) != 2 ||
+      data.getUint16(4, Endian.little) != 3 ||
       frame[6] != 0x81 ||
       frame[7] != 0 ||
       data.getUint32(8, Endian.little) != frame.length - 12) {

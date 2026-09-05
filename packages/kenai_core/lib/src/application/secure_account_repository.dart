@@ -11,6 +11,7 @@ abstract final class SecureAccountStorageKeys {
   static const String amneziaWg = 'vpn.amneziawg';
   static const String vless = 'vpn.vless';
   static const String profileHandle = 'vpn.profile_handle';
+  static const String amneziaWgProfileHandle = 'vpn.amneziawg_profile_handle';
 }
 
 final class SecureAccountRepository implements AccountRepository {
@@ -28,6 +29,8 @@ final class SecureAccountRepository implements AccountRepository {
   static const String _amneziaWg = SecureAccountStorageKeys.amneziaWg;
   static const String _vless = SecureAccountStorageKeys.vless;
   static const String _profileHandle = SecureAccountStorageKeys.profileHandle;
+  static const String _amneziaWgProfileHandle =
+      SecureAccountStorageKeys.amneziaWgProfileHandle;
 
   final ActivationApiClient _apiClient;
   final SecureStorage _secureStorage;
@@ -45,6 +48,7 @@ final class SecureAccountRepository implements AccountRepository {
       activationKeyMask: activationKey.masked,
     );
     String? provisionedHandle;
+    String? provisionedAmneziaWgHandle;
     try {
       await _secureStorage.write(
         key: _activationKey,
@@ -65,8 +69,19 @@ final class SecureAccountRepository implements AccountRepository {
       }
       await _writeCredential(
         _amneziaWg,
-        result.vpnCredentials[VpnProtocol.amneziaWg],
+        _profileProvisioner == null
+            ? result.vpnCredentials[VpnProtocol.amneziaWg]
+            : null,
       );
+      final String? amneziaWg = result.vpnCredentials[VpnProtocol.amneziaWg];
+      if (_profileProvisioner != null && amneziaWg != null) {
+        provisionedAmneziaWgHandle =
+            await _profileProvisioner.provisionAmneziaWg(amneziaWg);
+        await _secureStorage.write(
+            key: _amneziaWgProfileHandle, value: provisionedAmneziaWgHandle);
+      } else {
+        await _secureStorage.delete(_amneziaWgProfileHandle);
+      }
       await _writeCredential(
         _vless,
         result.vpnCredentials[VpnProtocol.vlessReality],
@@ -81,6 +96,11 @@ final class SecureAccountRepository implements AccountRepository {
           // Preserve the original activation/storage failure. The service uses
           // opaque encrypted files; a later activation replaces stale state.
         }
+      }
+      if (provisionedAmneziaWgHandle != null) {
+        try {
+          await _profileProvisioner?.deleteProfile(provisionedAmneziaWgHandle);
+        } on Object {/* preserve original error */}
       }
       await _clearAccountData();
       rethrow;
@@ -108,6 +128,11 @@ final class SecureAccountRepository implements AccountRepository {
     if (profileHandle != null && _profileProvisioner != null) {
       await _profileProvisioner.deleteProfile(profileHandle);
     }
+    final String? amneziaWgHandle =
+        await _secureStorage.read(_amneziaWgProfileHandle);
+    if (amneziaWgHandle != null && _profileProvisioner != null) {
+      await _profileProvisioner.deleteProfile(amneziaWgHandle);
+    }
     await _clearAccountData();
   }
 
@@ -119,6 +144,7 @@ final class SecureAccountRepository implements AccountRepository {
       _amneziaWg,
       _vless,
       _profileHandle,
+      _amneziaWgProfileHandle,
     ]) {
       await _secureStorage.delete(key);
     }

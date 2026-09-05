@@ -2,8 +2,8 @@
 
 use std::{fmt, net::IpAddr};
 
-pub const CONTRACT_VERSION: u32 = 2;
-pub const MAX_FRAME_SIZE: usize = 16 * 1024;
+pub const CONTRACT_VERSION: u32 = 3;
+pub const MAX_FRAME_SIZE: usize = 32 * 1024;
 const MAGIC: &[u8; 4] = b"KVPN";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +74,60 @@ pub struct WireGuardProfile {
     pub persistent_keepalive: Option<u16>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmneziaWgProfile {
+    pub wireguard: WireGuardProfile,
+    pub junk_packet_count: u16,
+    pub junk_packet_min_size: u16,
+    pub junk_packet_max_size: u16,
+    pub init_packet_junk_size: u16,
+    pub response_packet_junk_size: u16,
+    pub init_packet_magic_header: u16,
+    pub response_packet_magic_header: u16,
+    pub transport_packet_magic_header: String,
+    pub init_packet_magic_header_value: String,
+    pub response_packet_magic_header_value: String,
+    pub transport_packet_magic_header_value: String,
+    pub special_junk: Vec<String>,
+}
+
+impl AmneziaWgProfile {
+    /// Revalidates every base and `AmneziaWG`-specific field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::InvalidProfile`] for invalid or oversized data.
+    pub fn validate(&self) -> Result<(), FrameError> {
+        self.wireguard.validate()?;
+        if self.junk_packet_count > 10
+            || !(64..=1024).contains(&self.junk_packet_min_size)
+            || !(64..=1024).contains(&self.junk_packet_max_size)
+            || self.junk_packet_min_size > self.junk_packet_max_size
+            || self.init_packet_junk_size > 64
+            || self.response_packet_junk_size > 64
+            || self.init_packet_magic_header > 64
+            || self.response_packet_magic_header > 32
+            || self.special_junk.len() > 5
+        {
+            return Err(FrameError::InvalidProfile);
+        }
+        for value in [
+            &self.transport_packet_magic_header,
+            &self.init_packet_magic_header_value,
+            &self.response_packet_magic_header_value,
+            &self.transport_packet_magic_header_value,
+        ] {
+            validate_numeric_range(value)?;
+        }
+        if self.special_junk.iter().any(|value| {
+            value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control)
+        }) {
+            return Err(FrameError::InvalidProfile);
+        }
+        Ok(())
+    }
+}
+
 impl WireGuardProfile {
     /// Revalidates every field at the privileged boundary.
     ///
@@ -114,6 +168,12 @@ pub struct ImportWireGuardProfileRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportAmneziaWgProfileRequest {
+    pub operation_id: String,
+    pub profile: AmneziaWgProfile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlCommand {
     Status,
     Connect(ConnectRequest),
@@ -122,6 +182,7 @@ pub enum ControlCommand {
     },
     Diagnostics,
     ImportWireGuardProfile(ImportWireGuardProfileRequest),
+    ImportAmneziaWgProfile(ImportAmneziaWgProfileRequest),
     DeleteProfile {
         operation_id: String,
         profile_id: String,
@@ -250,6 +311,13 @@ pub fn encode_request(request: &RequestEnvelope) -> Result<Vec<u8>, FrameError> 
             6
         }
         ControlCommand::Statistics => 7,
+        ControlCommand::ImportAmneziaWgProfile(import) => {
+            validate_identifier(&import.operation_id)?;
+            import.profile.validate()?;
+            put_string(&mut body, &import.operation_id)?;
+            put_amneziawg_profile(&mut body, &import.profile)?;
+            8
+        }
     };
     if body.len() + 12 > MAX_FRAME_SIZE {
         return Err(FrameError::TooLarge);
@@ -352,6 +420,16 @@ pub fn decode_request(frame: &[u8]) -> Result<RequestEnvelope, FrameError> {
             }
         }
         7 => ControlCommand::Statistics,
+        8 => {
+            let operation_id = cursor.string()?;
+            validate_identifier(&operation_id)?;
+            let profile = cursor.amneziawg_profile()?;
+            profile.validate()?;
+            ControlCommand::ImportAmneziaWgProfile(ImportAmneziaWgProfileRequest {
+                operation_id,
+                profile,
+            })
+        }
         _ => return Err(FrameError::UnknownOperation),
     };
     if !cursor.finished() {
@@ -393,6 +471,42 @@ pub fn decode_wireguard_profile(bytes: &[u8]) -> Result<WireGuardProfile, FrameE
     }
     let mut cursor = Cursor::new(&bytes[4..]);
     let profile = cursor.profile()?;
+    if !cursor.finished() {
+        return Err(FrameError::TrailingData);
+    }
+    profile.validate()?;
+    Ok(profile)
+}
+
+/// Serializes a validated `AmneziaWG` profile for the encrypted service vault.
+///
+/// # Errors
+///
+/// Returns [`FrameError`] when validation or the size bound fails.
+pub fn encode_amneziawg_profile(profile: &AmneziaWgProfile) -> Result<Vec<u8>, FrameError> {
+    profile.validate()?;
+    let mut bytes = b"KAP1".to_vec();
+    put_amneziawg_profile(&mut bytes, profile)?;
+    if bytes.len() > MAX_FRAME_SIZE {
+        return Err(FrameError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+/// Decodes and validates an `AmneziaWG` profile after DPAPI decryption.
+///
+/// # Errors
+///
+/// Returns [`FrameError`] for malformed, trailing, invalid, or oversized data.
+pub fn decode_amneziawg_profile(bytes: &[u8]) -> Result<AmneziaWgProfile, FrameError> {
+    if bytes.len() > MAX_FRAME_SIZE {
+        return Err(FrameError::TooLarge);
+    }
+    if !bytes.starts_with(b"KAP1") {
+        return Err(FrameError::InvalidMagic);
+    }
+    let mut cursor = Cursor::new(&bytes[4..]);
+    let profile = cursor.amneziawg_profile()?;
     if !cursor.finished() {
         return Err(FrameError::TrailingData);
     }
@@ -639,6 +753,69 @@ fn put_profile(target: &mut Vec<u8>, profile: &WireGuardProfile) -> Result<(), F
     Ok(())
 }
 
+fn put_amneziawg_profile(
+    target: &mut Vec<u8>,
+    profile: &AmneziaWgProfile,
+) -> Result<(), FrameError> {
+    put_profile(target, &profile.wireguard)?;
+    for value in [
+        profile.junk_packet_count,
+        profile.junk_packet_min_size,
+        profile.junk_packet_max_size,
+        profile.init_packet_junk_size,
+        profile.response_packet_junk_size,
+        profile.init_packet_magic_header,
+        profile.response_packet_magic_header,
+    ] {
+        target.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in [
+        &profile.transport_packet_magic_header,
+        &profile.init_packet_magic_header_value,
+        &profile.response_packet_magic_header_value,
+        &profile.transport_packet_magic_header_value,
+    ] {
+        put_bounded_string(target, value, 253)?;
+    }
+    target.push(u8::try_from(profile.special_junk.len()).map_err(|_| FrameError::InvalidProfile)?);
+    for value in &profile.special_junk {
+        put_long_string(target, value)?;
+    }
+    Ok(())
+}
+
+fn put_long_string(target: &mut Vec<u8>, value: &str) -> Result<(), FrameError> {
+    if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+        return Err(FrameError::InvalidProfile);
+    }
+    target.extend_from_slice(
+        &u16::try_from(value.len())
+            .map_err(|_| FrameError::InvalidProfile)?
+            .to_le_bytes(),
+    );
+    target.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn validate_numeric_range(value: &str) -> Result<(), FrameError> {
+    let mut parts = value.split('-');
+    let first = parts.next().ok_or(FrameError::InvalidProfile)?;
+    if first.is_empty() || !first.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(FrameError::InvalidProfile);
+    }
+    let start: u32 = first.parse().map_err(|_| FrameError::InvalidProfile)?;
+    if let Some(end) = parts.next() {
+        if end.is_empty() || !end.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(FrameError::InvalidProfile);
+        }
+        let end: u32 = end.parse().map_err(|_| FrameError::InvalidProfile)?;
+        if start > end || parts.next().is_some() {
+            return Err(FrameError::InvalidProfile);
+        }
+    }
+    Ok(())
+}
+
 fn put_string_list(target: &mut Vec<u8>, values: &[String]) -> Result<(), FrameError> {
     let count = u8::try_from(values.len()).map_err(|_| FrameError::InvalidProfile)?;
     target.push(count);
@@ -749,6 +926,27 @@ impl<'a> Cursor<'a> {
         Ok(u16::from_le_bytes(self.bytes()?))
     }
 
+    fn long_string(&mut self) -> Result<String, FrameError> {
+        let length = usize::from(self.u16()?);
+        if length == 0 || length > 4096 {
+            return Err(FrameError::InvalidProfile);
+        }
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(FrameError::InvalidLength)?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(FrameError::InvalidLength)?;
+        self.offset = end;
+        let value = String::from_utf8(bytes.to_vec()).map_err(|_| FrameError::InvalidUtf8)?;
+        if value.chars().any(char::is_control) {
+            return Err(FrameError::InvalidProfile);
+        }
+        Ok(value)
+    }
+
     fn u64(&mut self) -> Result<u64, FrameError> {
         Ok(u64::from_le_bytes(self.bytes()?))
     }
@@ -805,6 +1003,43 @@ impl<'a> Cursor<'a> {
             endpoint_port,
             allowed_ips,
             persistent_keepalive,
+        })
+    }
+
+    fn amneziawg_profile(&mut self) -> Result<AmneziaWgProfile, FrameError> {
+        let wireguard = self.profile()?;
+        let junk_packet_count = self.u16()?;
+        let junk_packet_min_size = self.u16()?;
+        let junk_packet_max_size = self.u16()?;
+        let init_packet_junk_size = self.u16()?;
+        let response_packet_junk_size = self.u16()?;
+        let init_packet_magic_header = self.u16()?;
+        let response_packet_magic_header = self.u16()?;
+        let transport_packet_magic_header = self.bounded_string()?;
+        let init_packet_magic_header_value = self.bounded_string()?;
+        let response_packet_magic_header_value = self.bounded_string()?;
+        let transport_packet_magic_header_value = self.bounded_string()?;
+        let count = usize::from(self.byte()?);
+        if count > 5 {
+            return Err(FrameError::InvalidProfile);
+        }
+        let special_junk = (0..count)
+            .map(|_| self.long_string())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(AmneziaWgProfile {
+            wireguard,
+            junk_packet_count,
+            junk_packet_min_size,
+            junk_packet_max_size,
+            init_packet_junk_size,
+            response_packet_junk_size,
+            init_packet_magic_header,
+            response_packet_magic_header,
+            transport_packet_magic_header,
+            init_packet_magic_header_value,
+            response_packet_magic_header_value,
+            transport_packet_magic_header_value,
+            special_junk,
         })
     }
 
@@ -865,6 +1100,24 @@ mod frame_tests {
         }
     }
 
+    fn amneziawg_profile() -> AmneziaWgProfile {
+        AmneziaWgProfile {
+            wireguard: wireguard_profile(),
+            junk_packet_count: 4,
+            junk_packet_min_size: 64,
+            junk_packet_max_size: 128,
+            init_packet_junk_size: 1,
+            response_packet_junk_size: 2,
+            init_packet_magic_header: 3,
+            response_packet_magic_header: 4,
+            transport_packet_magic_header: "100".into(),
+            init_packet_magic_header_value: "200-210".into(),
+            response_packet_magic_header_value: "300".into(),
+            transport_packet_magic_header_value: "400".into(),
+            special_junk: vec!["<b 0x01>".into()],
+        }
+    }
+
     #[test]
     fn round_trips_every_allow_listed_operation() {
         for request in [
@@ -907,10 +1160,35 @@ mod frame_tests {
                     profile_id: "wg-0123456789abcdef".into(),
                 },
             },
+            RequestEnvelope {
+                contract_version: CONTRACT_VERSION,
+                request_id: "import-awg-1".into(),
+                command: ControlCommand::ImportAmneziaWgProfile(ImportAmneziaWgProfileRequest {
+                    operation_id: "provision-awg-1".into(),
+                    profile: amneziawg_profile(),
+                }),
+            },
         ] {
             let encoded = encode_request(&request).expect("valid request");
             assert_eq!(decode_request(&encoded), Ok(request));
         }
+    }
+
+    #[test]
+    fn encrypted_awg_payload_codec_rejects_trailing_and_invalid_ranges() {
+        let profile = amneziawg_profile();
+        let encoded = encode_amneziawg_profile(&profile).expect("valid AWG profile");
+        assert_eq!(decode_amneziawg_profile(&encoded), Ok(profile.clone()));
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert_eq!(
+            decode_amneziawg_profile(&trailing),
+            Err(FrameError::TrailingData)
+        );
+        let mut invalid = profile;
+        invalid.junk_packet_min_size = 1024;
+        invalid.junk_packet_max_size = 64;
+        assert_eq!(invalid.validate(), Err(FrameError::InvalidProfile));
     }
 
     #[test]

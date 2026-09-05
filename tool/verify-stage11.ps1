@@ -36,7 +36,7 @@ Require-Text 'services/windows_vpn_service/src/wireguard_engine.rs' 'SERVICE_SID
 Require-Text 'services/windows_vpn_service/src/wireguard_engine.rs' 'LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR'
 Require-Text 'services/windows_vpn_service/src/wireguard_engine.rs' 'WireGuardGetConfiguration'
 Require-Text 'services/windows_vpn_service/src/wireguard_engine.rs' 'fn is_connected'
-Require-Text 'crates/vpn_contracts/src/lib.rs' 'CONTRACT_VERSION: u32 = 2'
+Require-Text 'crates/vpn_contracts/src/lib.rs' 'CONTRACT_VERSION: u32 = [23]'
 Require-Text 'docs/architecture/0010-wireguard-windows-engine.md' 'AmneziaWG 2.0 and VLESS/REALITY'
 Require-Text 'docs/continuation-prompts.md' 'AmneziaWG 2\.0'
 Require-Text 'docs/continuation-prompts.md' 'VLESS \+ REALITY/Xray'

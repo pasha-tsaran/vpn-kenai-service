@@ -100,7 +100,10 @@ final class ArmeniaMvpServerRepository implements ServerRepository {
     countryName: 'Армения',
     city: 'Ереван',
     name: 'Армения',
-    protocols: const <VpnProtocol>{VpnProtocol.wireGuard},
+    protocols: const <VpnProtocol>{
+      VpnProtocol.wireGuard,
+      VpnProtocol.amneziaWg,
+    },
     status: ServerStatus(
       operational: ServerOperationalStatus.operational,
       internetReachability: InternetReachability.reachable,

@@ -1,12 +1,6 @@
 // Local-only, bounded named-pipe transport for the privileged service.
 
-use std::{
-    ffi::c_void,
-    io,
-    mem::size_of,
-    os::windows::io::AsRawHandle,
-    ptr,
-};
+use std::{ffi::c_void, io, mem::size_of, os::windows::io::AsRawHandle, ptr};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -14,7 +8,7 @@ use tokio::{
     sync::watch,
 };
 use vpn_contracts::{
-    decode_request, declared_frame_size, encode_response, ConnectionPhase, ResponseEnvelope,
+    declared_frame_size, decode_request, encode_response, ConnectionPhase, ResponseEnvelope,
     CONTRACT_VERSION,
 };
 use vpn_service_core::{
@@ -22,13 +16,11 @@ use vpn_service_core::{
 };
 
 use super::profile_vault::DpapiProfileVault;
-use super::wireguard_engine::WireGuardWindowsBackend;
+use super::windows_backend::WindowsVpnBackend;
 use windows_sys::Win32::{
     Foundation::LocalFree,
     Security::{
-        Authorization::{
-            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-        },
+        Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
         PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
     },
     System::{
@@ -37,7 +29,7 @@ use windows_sys::Win32::{
     },
 };
 
-const PIPE_NAME: &str = r"\\.\pipe\KenaiVpnControl-v2";
+const PIPE_NAME: &str = r"\\.\pipe\KenaiVpnControl-v3";
 const HEADER_SIZE: usize = 12;
 const INVALID_REQUEST_ID: &str = "invalid-request";
 
@@ -45,7 +37,7 @@ pub async fn serve(mut shutdown: watch::Receiver<bool>) -> io::Result<()> {
     let security = PipeSecurity::new()?;
     let mut processor = ServiceCommandProcessor::with_backend(
         DpapiProfileVault::system_default()?,
-        WireGuardWindowsBackend::system_default()?,
+        WindowsVpnBackend::system_default()?,
     );
 
     loop {
@@ -206,9 +198,7 @@ impl PipeSecurity {
         // Protected DACL: deny anonymous/network tokens, allow SYSTEM and
         // Administrators full access, and authenticated users read/write.
         // The caller-session check narrows authenticated users after connect.
-        let sddl = to_wide(
-            "D:P(D;;GA;;;AN)(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)",
-        );
+        let sddl = to_wide("D:P(D;;GA;;;AN)(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)");
         let mut descriptor = ptr::null_mut();
         // SAFETY: `sddl` is NUL-terminated and lives through the call;
         // `descriptor` is a valid out-pointer released with `LocalFree`.

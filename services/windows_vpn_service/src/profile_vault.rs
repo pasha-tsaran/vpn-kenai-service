@@ -1,19 +1,19 @@
 use std::{
     ffi::c_void,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     ptr,
 };
 
-use vpn_contracts::{decode_wireguard_profile, encode_wireguard_profile, WireGuardProfile};
+use vpn_contracts::{
+    decode_amneziawg_profile, decode_wireguard_profile, encode_amneziawg_profile,
+    encode_wireguard_profile, AmneziaWgProfile, WireGuardProfile,
+};
 use vpn_service_core::{CommandError, ProfileVault};
 use windows_sys::Win32::{
     Foundation::LocalFree,
     Security::{
-        Authorization::{
-            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-        },
+        Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
         Cryptography::{
             BCryptGenRandom, CryptProtectData, CryptUnprotectData, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
             CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
@@ -34,7 +34,11 @@ impl DpapiProfileVault {
         let program_data = std::env::var_os("ProgramData")
             .filter(|value| !value.is_empty())
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ProgramData unavailable"))?;
-        Self::new(PathBuf::from(program_data).join("KenaiVPN").join("profiles"))
+        Self::new(
+            PathBuf::from(program_data)
+                .join("KenaiVPN")
+                .join("profiles"),
+        )
     }
 
     fn new(root: PathBuf) -> io::Result<Self> {
@@ -53,19 +57,28 @@ impl DpapiProfileVault {
 
 impl ProfileVault for DpapiProfileVault {
     fn store_wireguard(&mut self, profile: &WireGuardProfile) -> Result<String, CommandError> {
-        let mut plaintext = encode_wireguard_profile(profile)
-            .map_err(|_| CommandError::InvalidProfile)?;
+        let mut plaintext =
+            encode_wireguard_profile(profile).map_err(|_| CommandError::InvalidProfile)?;
         let encrypted = protect(&plaintext).map_err(|_| CommandError::ProfileStoreUnavailable);
         plaintext.fill(0);
         let encrypted = encrypted?;
 
         for _ in 0..8 {
-            let profile_id = random_handle().map_err(|_| CommandError::ProfileStoreUnavailable)?;
+            let profile_id =
+                random_handle("wg-").map_err(|_| CommandError::ProfileStoreUnavailable)?;
             let path = self.path(&profile_id)?;
-            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
                 Ok(mut file) => {
                     use std::io::Write;
-                    if file.write_all(&encrypted).and_then(|()| file.sync_all()).is_err() {
+                    if file
+                        .write_all(&encrypted)
+                        .and_then(|()| file.sync_all())
+                        .is_err()
+                    {
                         let _ = fs::remove_file(path);
                         return Err(CommandError::ProfileStoreUnavailable);
                     }
@@ -79,13 +92,64 @@ impl ProfileVault for DpapiProfileVault {
     }
 
     fn load_wireguard(&self, profile_id: &str) -> Result<WireGuardProfile, CommandError> {
-        let encrypted = fs::read(self.path(profile_id)?)
-            .map_err(|error| match error.kind() {
-                io::ErrorKind::NotFound => CommandError::ProfileNotFound,
-                _ => CommandError::ProfileStoreUnavailable,
-            })?;
-        let mut plaintext = unprotect(&encrypted).map_err(|_| CommandError::ProfileStoreUnavailable)?;
-        let profile = decode_wireguard_profile(&plaintext).map_err(|_| CommandError::InvalidProfile);
+        let encrypted = fs::read(self.path(profile_id)?).map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => CommandError::ProfileNotFound,
+            _ => CommandError::ProfileStoreUnavailable,
+        })?;
+        let mut plaintext =
+            unprotect(&encrypted).map_err(|_| CommandError::ProfileStoreUnavailable)?;
+        let profile =
+            decode_wireguard_profile(&plaintext).map_err(|_| CommandError::InvalidProfile);
+        plaintext.fill(0);
+        profile
+    }
+
+    fn store_amneziawg(&mut self, profile: &AmneziaWgProfile) -> Result<String, CommandError> {
+        let mut plaintext =
+            encode_amneziawg_profile(profile).map_err(|_| CommandError::InvalidProfile)?;
+        let encrypted = protect(&plaintext).map_err(|_| CommandError::ProfileStoreUnavailable);
+        plaintext.fill(0);
+        let encrypted = encrypted?;
+        for _ in 0..8 {
+            let profile_id =
+                random_handle("awg-").map_err(|_| CommandError::ProfileStoreUnavailable)?;
+            let path = self.path(&profile_id)?;
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if file
+                        .write_all(&encrypted)
+                        .and_then(|()| file.sync_all())
+                        .is_err()
+                    {
+                        let _ = fs::remove_file(path);
+                        return Err(CommandError::ProfileStoreUnavailable);
+                    }
+                    return Ok(profile_id);
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(CommandError::ProfileStoreUnavailable),
+            }
+        }
+        Err(CommandError::ProfileStoreUnavailable)
+    }
+
+    fn load_amneziawg(&self, profile_id: &str) -> Result<AmneziaWgProfile, CommandError> {
+        if !profile_id.starts_with("awg-") {
+            return Err(CommandError::ProfileNotFound);
+        }
+        let encrypted = fs::read(self.path(profile_id)?).map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => CommandError::ProfileNotFound,
+            _ => CommandError::ProfileStoreUnavailable,
+        })?;
+        let mut plaintext =
+            unprotect(&encrypted).map_err(|_| CommandError::ProfileStoreUnavailable)?;
+        let profile =
+            decode_amneziawg_profile(&plaintext).map_err(|_| CommandError::InvalidProfile);
         plaintext.fill(0);
         profile
     }
@@ -179,7 +243,7 @@ fn unprotect(encrypted: &[u8]) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn random_handle() -> io::Result<String> {
+fn random_handle(prefix: &str) -> io::Result<String> {
     let mut random = [0_u8; 16];
     let length = u32::try_from(random.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "random buffer too large"))?;
@@ -197,7 +261,7 @@ fn random_handle() -> io::Result<String> {
         return Err(io::Error::from_raw_os_error(status));
     }
     let mut handle = String::with_capacity(35);
-    handle.push_str("wg-");
+    handle.push_str(prefix);
     for byte in random {
         use std::fmt::Write;
         let _ = write!(handle, "{byte:02x}");
@@ -206,9 +270,11 @@ fn random_handle() -> io::Result<String> {
 }
 
 fn valid_handle(value: &str) -> bool {
-    value.len() == 35
-        && value.starts_with("wg-")
-        && value[3..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    ((value.len() == 35 && value.starts_with("wg-"))
+        || (value.len() == 36 && value.starts_with("awg-")))
+        && value[value.find('-').unwrap_or(0) + 1..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub(super) fn apply_service_acl(path: &Path) -> io::Result<()> {
@@ -254,8 +320,9 @@ mod tests {
 
     #[test]
     fn handles_are_opaque_and_path_safe() {
-        let handle = random_handle().expect("CSPRNG");
+        let handle = random_handle("wg-").expect("CSPRNG");
         assert!(valid_handle(&handle));
+        assert!(valid_handle(&random_handle("awg-").expect("CSPRNG")));
         assert!(!valid_handle("../profile"));
         assert!(!valid_handle("wg-not-hex"));
     }
@@ -264,7 +331,9 @@ mod tests {
     fn dpapi_never_leaves_plaintext_in_its_output() {
         let secret = b"private-profile-material";
         let encrypted = protect(secret).expect("DPAPI");
-        assert!(!encrypted.windows(secret.len()).any(|window| window == secret));
+        assert!(!encrypted
+            .windows(secret.len())
+            .any(|window| window == secret));
         assert_eq!(unprotect(&encrypted).expect("DPAPI decrypt"), secret);
     }
 }

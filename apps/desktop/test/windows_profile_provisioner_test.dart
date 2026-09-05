@@ -46,10 +46,40 @@ AllowedIPs = 0.0.0.0/0
       throwsA(isA<ProfileProvisioningException>()),
     );
   });
+
+  test('imports a distinct typed AmneziaWG 2.0 profile', () async {
+    final String profileId = await provisioner.provisionAmneziaWg('''
+[Interface]
+PrivateKey = $privateKey
+Address = 10.0.0.2/32
+DNS = 1.1.1.1
+Jc = 4
+Jmin = 64
+Jmax = 128
+S1 = 1
+S2 = 2
+S3 = 3
+S4 = 4
+H1 = 100
+H2 = 200-210
+H3 = 300
+H4 = 400
+[Peer]
+PublicKey = $publicKey
+Endpoint = vpn.example.test:51820
+AllowedIPs = 0.0.0.0/0
+''');
+
+    expect(profileId, _FakeTransport.awgHandle);
+    expect(transport.opcodes, <int>[8]);
+    expect(_containsSequence(transport.lastRequest, privateKey.codeUnits),
+        isFalse);
+  });
 }
 
 final class _FakeTransport implements ProfileIpcTransport {
   static const String handle = 'wg-00112233445566778899aabbccddeeff';
+  static const String awgHandle = 'awg-00112233445566778899aabbccddeeff';
   final List<int> opcodes = <int>[];
   Uint8List lastRequest = Uint8List(0);
 
@@ -59,12 +89,18 @@ final class _FakeTransport implements ProfileIpcTransport {
     opcodes.add(request[6]);
     final int idLength = request[12];
     final List<int> requestId = request.sublist(13, 13 + idLength);
-    final String code = request[6] == 5 ? 'PROFILE_STORED' : 'PROFILE_DELETED';
+    final bool isImport = request[6] == 5 || request[6] == 8;
+    final String selectedHandle = request[6] == 8 ? awgHandle : handle;
+    final String code = isImport ? 'PROFILE_STORED' : 'PROFILE_DELETED';
     final List<int> body = <int>[
       idLength,
       ...requestId,
       0,
-      if (request[6] == 5) ...<int>[1, handle.length, ...handle.codeUnits] else
+      if (isImport) ...<int>[
+        1,
+        selectedHandle.length,
+        ...selectedHandle.codeUnits
+      ] else
         0,
       0,
       code.length,
@@ -75,7 +111,7 @@ final class _FakeTransport implements ProfileIpcTransport {
       ..setRange(0, 4, const <int>[0x4b, 0x56, 0x50, 0x4e])
       ..setRange(12, 12 + body.length, body);
     ByteData.sublistView(response)
-      ..setUint16(4, 2, Endian.little)
+      ..setUint16(4, 3, Endian.little)
       ..setUint8(6, 0x81)
       ..setUint32(8, body.length, Endian.little);
     return response;

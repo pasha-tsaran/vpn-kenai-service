@@ -38,6 +38,7 @@ final class WindowsVpnEngine implements VpnEngine {
   @override
   Set<VpnProtocol> get supportedProtocols => const <VpnProtocol>{
         VpnProtocol.wireGuard,
+        VpnProtocol.amneziaWg,
       };
 
   @override
@@ -49,7 +50,8 @@ final class WindowsVpnEngine implements VpnEngine {
         protocol: protocol,
         isMock: false,
         supportsKillSwitch: false,
-        supportsDns: protocol == VpnProtocol.wireGuard,
+        supportsDns: protocol == VpnProtocol.wireGuard ||
+            protocol == VpnProtocol.amneziaWg,
         supportsNetworkChangeReconnect: false,
         supportsSleepRecovery: false,
       );
@@ -77,7 +79,11 @@ final class WindowsVpnEngine implements VpnEngine {
         _emitFailure('SUBSCRIPTION_REQUIRED');
         return;
       }
-      final String? profileHandle = access.profileHandle;
+      final String? profileHandle = switch (request.profile.protocol) {
+        VpnProtocol.wireGuard => access.profileHandle,
+        VpnProtocol.amneziaWg => access.amneziaWgProfileHandle,
+        _ => null,
+      };
       if (profileHandle == null || !_validIdentifier(profileHandle)) {
         _emitFailure('PROFILE_NOT_FOUND');
         return;
@@ -88,7 +94,7 @@ final class WindowsVpnEngine implements VpnEngine {
         Uint8List.fromList(<int>[
           ..._identifierBytes(request.operationId),
           ..._identifierBytes(profileHandle),
-          1,
+          request.profile.protocol == VpnProtocol.amneziaWg ? 2 : 1,
           0,
         ]),
       );
@@ -174,11 +180,14 @@ final class WindowsVpnEngine implements VpnEngine {
       );
     }
     final _AccountAccess access = await _accountAccess();
+    final String? handle = profile.protocol == VpnProtocol.amneziaWg
+        ? access.amneziaWgProfileHandle
+        : access.profileHandle;
     return ProfileValidation(
-      isValid: access.active && access.profileHandle != null,
+      isValid: access.active && handle != null,
       errorCode: !access.active
           ? 'SUBSCRIPTION_REQUIRED'
-          : access.profileHandle == null
+          : handle == null
               ? 'PROFILE_NOT_FOUND'
               : null,
     );
@@ -211,6 +220,8 @@ final class WindowsVpnEngine implements VpnEngine {
         await _secureStorage.read(SecureAccountStorageKeys.session);
     final String? handle =
         await _secureStorage.read(SecureAccountStorageKeys.profileHandle);
+    final String? amneziaWgHandle = await _secureStorage
+        .read(SecureAccountStorageKeys.amneziaWgProfileHandle);
     if (encoded == null) return const _AccountAccess(active: false);
     try {
       final Object? decoded = jsonDecode(encoded);
@@ -220,7 +231,10 @@ final class WindowsVpnEngine implements VpnEngine {
       final Object? subscription = decoded['subscription'];
       final bool active = subscription is Map<String, Object?> &&
           subscription['status'] == SubscriptionStatus.active.name;
-      return _AccountAccess(active: active, profileHandle: handle);
+      return _AccountAccess(
+          active: active,
+          profileHandle: handle,
+          amneziaWgProfileHandle: amneziaWgHandle);
     } on FormatException {
       return const _AccountAccess(active: false);
     }
@@ -316,8 +330,10 @@ final class WindowsVpnEngine implements VpnEngine {
 }
 
 final class _AccountAccess {
-  const _AccountAccess({required this.active, this.profileHandle});
+  const _AccountAccess(
+      {required this.active, this.profileHandle, this.amneziaWgProfileHandle});
 
   final bool active;
   final String? profileHandle;
+  final String? amneziaWgProfileHandle;
 }

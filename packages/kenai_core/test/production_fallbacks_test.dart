@@ -2,7 +2,8 @@ import 'package:kenai_core/kenai_core.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('MVP server repository exposes only Armenia WireGuard', () async {
+  test('MVP server repository exposes Armenia with implemented engines',
+      () async {
     final ArmeniaMvpServerRepository repository = ArmeniaMvpServerRepository();
 
     final List<VpnServer> servers = await repository.getServers();
@@ -11,7 +12,10 @@ void main() {
     expect(servers, hasLength(1));
     expect(servers.single.countryCode, 'AM');
     expect(servers.single.isTest, isFalse);
-    expect(servers.single.protocols, <VpnProtocol>{VpnProtocol.wireGuard});
+    expect(servers.single.protocols, <VpnProtocol>{
+      VpnProtocol.wireGuard,
+      VpnProtocol.amneziaWg,
+    });
     expect(await repository.getServers(query: 'Германия'), isEmpty);
   });
 

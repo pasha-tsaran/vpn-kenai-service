@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::{
     ffi::{c_void, OsString},
     fs,
@@ -6,7 +7,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use std::fmt::Write as _;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
@@ -129,16 +129,17 @@ impl WireGuardWindowsBackend {
         service
             .set_config_service_sid_info(ServiceSidType::Unrestricted)
             .map_err(|_| BackendFailure::Internal)?;
-        service.start::<&str>(&[]).map_err(|_| BackendFailure::Internal)?;
+        service
+            .start::<&str>(&[])
+            .map_err(|_| BackendFailure::Internal)?;
         wait_for_state(&service, ServiceState::Running, START_TIMEOUT)
             .map_err(|_| BackendFailure::ServerUnavailable)?;
         fs::remove_file(&self.config_path).map_err(|_| BackendFailure::Internal)
     }
 
     fn cleanup_stale(&self) -> Result<(), BackendFailure> {
-        let manager =
-            ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-                .map_err(|_| BackendFailure::EngineUnavailable)?;
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|_| BackendFailure::EngineUnavailable)?;
         if let Ok(service) = manager.open_service(SERVICE_NAME, ServiceAccess::ALL_ACCESS) {
             let state = service
                 .query_status()
@@ -184,11 +185,8 @@ impl VpnBackend for WireGuardWindowsBackend {
     }
 
     fn is_connected(&self) -> Result<bool, BackendFailure> {
-        let manager = ServiceManager::local_computer(
-            None::<&str>,
-            ServiceManagerAccess::CONNECT,
-        )
-        .map_err(|_| BackendFailure::EngineUnavailable)?;
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|_| BackendFailure::EngineUnavailable)?;
         let Ok(service) = manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) else {
             return Ok(false);
         };
@@ -219,8 +217,10 @@ impl WireGuardWindowsBackend {
         if library.is_null() {
             return Err(BackendFailure::EngineUnavailable);
         }
-        let open_symbol = unsafe { GetProcAddress(library, c"WireGuardOpenAdapter".as_ptr().cast()) };
-        let close_symbol = unsafe { GetProcAddress(library, c"WireGuardCloseAdapter".as_ptr().cast()) };
+        let open_symbol =
+            unsafe { GetProcAddress(library, c"WireGuardOpenAdapter".as_ptr().cast()) };
+        let close_symbol =
+            unsafe { GetProcAddress(library, c"WireGuardCloseAdapter".as_ptr().cast()) };
         let get_symbol =
             unsafe { GetProcAddress(library, c"WireGuardGetConfiguration".as_ptr().cast()) };
         let (Some(open_symbol), Some(close_symbol), Some(get_symbol)) =
@@ -276,12 +276,18 @@ pub fn run_tunnel_service(config_path: &Path) -> io::Result<()> {
     .join("KenaiVPN")
     .join("runtime");
     let expected = runtime_root.join(format!("{TUNNEL_NAME}.conf"));
-    if config_path != expected || config_path.extension().and_then(|value| value.to_str()) != Some("conf") {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "invalid tunnel profile path"));
+    if config_path != expected
+        || config_path.extension().and_then(|value| value.to_str()) != Some("conf")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "invalid tunnel profile path",
+        ));
     }
     let payload_root = executable_root.join("wireguard").join("amd64");
     let tunnel_path = payload_root.join("tunnel.dll");
-    verify_hash(&tunnel_path, TUNNEL_SHA256).map_err(|_| io::Error::other("invalid tunnel payload"))?;
+    verify_hash(&tunnel_path, TUNNEL_SHA256)
+        .map_err(|_| io::Error::other("invalid tunnel payload"))?;
     verify_hash(&payload_root.join("wireguard.dll"), DRIVER_SHA256)
         .map_err(|_| io::Error::other("invalid driver payload"))?;
     let wide_library = to_wide(&tunnel_path.to_string_lossy());
@@ -300,7 +306,10 @@ pub fn run_tunnel_service(config_path: &Path) -> io::Result<()> {
     let symbol = unsafe { GetProcAddress(library, c"WireGuardTunnelService".as_ptr().cast()) };
     let Some(symbol) = symbol else {
         unsafe { FreeLibrary(library) };
-        return Err(io::Error::new(io::ErrorKind::NotFound, "tunnel entrypoint unavailable"));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "tunnel entrypoint unavailable",
+        ));
     };
     // SAFETY: upstream exports this exact cdecl signature.
     let tunnel: TunnelService = unsafe { std::mem::transmute(symbol) };

@@ -8,8 +8,8 @@ Windows-first, cross-platform-ready client scaffold for Kenai VPN.
 Этапы 0–9 включают архитектурное решение, доменные модели, ports,
 детерминированные mocks, Flutter-навигацию, экраны «Серверы», «Аккаунт» и
 «Тарифы», минимальную Windows-службу, защищённый типизированный IPC и
-production HTTPS-активацию и реальный WireGuard for Windows.
-Release-клиент создаёт WireGuard-туннель через системную службу, но пока не
+production HTTPS-активацию, реальный WireGuard for Windows и AmneziaWG 2.0.
+Release-клиент создаёт WireGuard- или AmneziaWG-туннель через системную службу, но пока не
 является готовым установщиком и не проводит оплату. HTTPS-клиент
 активации обращается к production API только в release-сборке с явно заданным
 `KENAI_API_BASE_URL`.
@@ -18,7 +18,7 @@ Release-клиент создаёт WireGuard-туннель через сист
 
 - Flutter/Dart: presentation, navigation и непривилегированные use cases.
 - Rust: общий service contract/state machine и привилегированная Windows-служба.
-- WireGuard реализован; AmneziaWG и Xray добавляются отдельными адаптерами в следующих этапах.
+- WireGuard и AmneziaWG 2.0 реализованы отдельными адаптерами; Xray добавляется следующим этапом.
 - Системная служба, а не UI, владеет tunnel lifecycle, routes и DNS.
 - Секреты доступны только через реализацию `SecureStorage` для конкретной ОС.
 
@@ -92,6 +92,7 @@ powershell -NoProfile -File tool/verify-stage9.ps1
 powershell -NoProfile -File tool/verify-stage10.ps1
 powershell -NoProfile -File tool/verify-stage11.ps1
 powershell -NoProfile -File tool/verify-stage12.ps1
+powershell -NoProfile -File tool/verify-stage13.ps1
 ```
 
 Stage 10 adds strict WireGuard configuration parsing plus typed profile
@@ -103,15 +104,18 @@ disabled through stage 10.
 Stage 11 integrates the official WireGuard for Windows embeddable service.
 The privileged service verifies pinned DLL hashes, controls one fixed tunnel,
 removes temporary plaintext after startup, and exposes traffic/handshake data
-through bounded IPC. AmneziaWG and VLESS remain explicitly unavailable until
-their separate engine stages.
+through bounded IPC.
 
 Stage 12 connects the release GUI to the typed Windows VPN IPC. A successful
 12-digit activation provisions an opaque service-side profile handle; only then
 can the GUI request a real WireGuard connection. Payment, speed test and other
-unfinished sections are hidden from the minimal release. AmneziaWG and VLESS
-credentials are retained only in OS secure storage until their real engines are
-added in stages 13 and 14.
+unfinished sections are hidden from the minimal release.
+
+Stage 13 adds the separately pinned, signed AmneziaWG Windows 2.0.0 engine.
+Activation provisions its AWG-only fields through IPC v3 into the service DPAPI
+vault; the GUI retains only an opaque handle. The service owns its fixed SCM
+tunnel lifecycle, DNS/routes, cleanup, recovery and safe traffic statistics.
+VLESS credentials remain in OS secure storage until stage 14.
 
 Запуск mock UI после bootstrap:
 

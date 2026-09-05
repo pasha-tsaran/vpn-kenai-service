@@ -50,3 +50,5 @@ jobs:
         run: ./tool/verify-stage11.ps1
       - shell: powershell
         run: ./tool/verify-stage12.ps1
+      - shell: powershell
+        run: ./tool/verify-stage13.ps1

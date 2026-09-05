@@ -32,6 +32,13 @@ mod windows_service_host {
     mod wireguard_engine {
         include!("wireguard_engine.rs");
     }
+    #[allow(unsafe_code)]
+    mod amneziawg_engine {
+        include!("amneziawg_engine.rs");
+    }
+    mod windows_backend {
+        include!("windows_backend.rs");
+    }
 
     const SERVICE_NAME: &str = "KenaiVpnService";
 

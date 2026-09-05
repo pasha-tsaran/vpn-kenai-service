@@ -74,16 +74,42 @@ void main() {
     expect((await engine.status()).phase, VpnConnectionPhase.disconnected);
   });
 
-  test('does not claim unsupported production protocols or kill switch', () {
-    expect(engine.supportedProtocols, <VpnProtocol>{VpnProtocol.wireGuard});
+  test('claims only implemented production protocols and no kill switch', () {
+    expect(engine.supportedProtocols, <VpnProtocol>{
+      VpnProtocol.wireGuard,
+      VpnProtocol.amneziaWg,
+    });
     expect(
       engine.capabilitiesFor(VpnProtocol.wireGuard).supportsKillSwitch,
       isFalse,
     );
     expect(
       engine.capabilitiesFor(VpnProtocol.amneziaWg).supportsDns,
-      isFalse,
+      isTrue,
     );
+  });
+
+  test('connects AmneziaWG with its separate opaque handle and protocol',
+      () async {
+    await _activateStorage(storage);
+    await storage.write(
+      key: SecureAccountStorageKeys.amneziaWgProfileHandle,
+      value: _VpnTransport.awgProfileHandle,
+    );
+    await engine.connect(const ConnectionRequest(
+      operationId: 'connect-awg',
+      profile: VpnProfile(
+        id: 'ui-awg',
+        deviceId: 'windows-device',
+        serverId: 'armenia-1',
+        protocol: VpnProtocol.amneziaWg,
+      ),
+      killSwitch: false,
+    ));
+    expect(transport.lastRequest,
+        containsAllInOrder(_VpnTransport.awgProfileHandle.codeUnits));
+    expect(transport.lastRequest.last, 0);
+    expect(transport.lastRequest[transport.lastRequest.length - 2], 2);
   });
 }
 
@@ -119,6 +145,7 @@ ConnectionRequest _request() => const ConnectionRequest(
 
 final class _VpnTransport implements ProfileIpcTransport {
   static const String profileHandle = 'wg-00112233445566778899aabbccddeeff';
+  static const String awgProfileHandle = 'awg-00112233445566778899aabbccddeeff';
   final List<int> opcodes = <int>[];
   Uint8List lastRequest = Uint8List(0);
   bool connected = false;
