@@ -28,12 +28,26 @@ mod windows_service_host {
         include!("profile_vault.rs");
     }
 
+    #[allow(unsafe_code)]
+    mod wireguard_engine {
+        include!("wireguard_engine.rs");
+    }
+
     const SERVICE_NAME: &str = "KenaiVpnService";
 
     define_windows_service!(ffi_service_main, service_main);
 
     pub fn run() -> windows_service::Result<()> {
         service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+    }
+
+    pub fn run_entry() -> Result<(), Box<dyn Error>> {
+        let arguments: Vec<OsString> = std::env::args_os().collect();
+        if arguments.len() == 3 && arguments[1] == "/wireguard-service" {
+            return wireguard_engine::run_tunnel_service(std::path::Path::new(&arguments[2]))
+                .map_err(Into::into);
+        }
+        run().map_err(Into::into)
     }
 
     fn service_main(_arguments: Vec<OsString>) {
@@ -79,8 +93,8 @@ mod windows_service_host {
 }
 
 #[cfg(windows)]
-fn main() -> windows_service::Result<()> {
-    windows_service_host::run()
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    windows_service_host::run_entry()
 }
 
 #[cfg(not(windows))]

@@ -2,7 +2,7 @@
 
 use std::{fmt, net::IpAddr};
 
-pub const CONTRACT_VERSION: u32 = 1;
+pub const CONTRACT_VERSION: u32 = 2;
 pub const MAX_FRAME_SIZE: usize = 16 * 1024;
 const MAGIC: &[u8; 4] = b"KVPN";
 
@@ -126,6 +126,7 @@ pub enum ControlCommand {
         operation_id: String,
         profile_id: String,
     },
+    Statistics,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,6 +144,14 @@ pub struct ResponseEnvelope {
     pub profile_id: Option<String>,
     pub kill_switch_active: bool,
     pub code: String,
+    pub statistics: Option<TunnelStatistics>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TunnelStatistics {
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
+    pub last_handshake_unix_ms: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -240,6 +249,7 @@ pub fn encode_request(request: &RequestEnvelope) -> Result<Vec<u8>, FrameError> 
             put_string(&mut body, profile_id)?;
             6
         }
+        ControlCommand::Statistics => 7,
     };
     if body.len() + 12 > MAX_FRAME_SIZE {
         return Err(FrameError::TooLarge);
@@ -341,6 +351,7 @@ pub fn decode_request(frame: &[u8]) -> Result<RequestEnvelope, FrameError> {
                 profile_id,
             }
         }
+        7 => ControlCommand::Statistics,
         _ => return Err(FrameError::UnknownOperation),
     };
     if !cursor.finished() {
@@ -414,6 +425,21 @@ pub fn encode_response(response: &ResponseEnvelope) -> Result<Vec<u8>, FrameErro
     }
     body.push(u8::from(response.kill_switch_active));
     put_string(&mut body, &response.code)?;
+    match response.statistics {
+        Some(statistics) => {
+            body.push(1);
+            body.extend_from_slice(&statistics.bytes_received.to_le_bytes());
+            body.extend_from_slice(&statistics.bytes_sent.to_le_bytes());
+            match statistics.last_handshake_unix_ms {
+                Some(value) => {
+                    body.push(1);
+                    body.extend_from_slice(&value.to_le_bytes());
+                }
+                None => body.push(0),
+            }
+        }
+        None => body.push(0),
+    }
     encode_frame(0x81, &body)
 }
 
@@ -448,6 +474,24 @@ pub fn decode_response(frame: &[u8]) -> Result<ResponseEnvelope, FrameError> {
     };
     let code = cursor.string()?;
     validate_identifier(&code)?;
+    let statistics = match cursor.byte()? {
+        0 => None,
+        1 => {
+            let bytes_received = cursor.u64()?;
+            let bytes_sent = cursor.u64()?;
+            let last_handshake_unix_ms = match cursor.byte()? {
+                0 => None,
+                1 => Some(cursor.i64()?),
+                _ => return Err(FrameError::InvalidBoolean),
+            };
+            Some(TunnelStatistics {
+                bytes_received,
+                bytes_sent,
+                last_handshake_unix_ms,
+            })
+        }
+        _ => return Err(FrameError::InvalidBoolean),
+    };
     if !cursor.finished() {
         return Err(FrameError::TrailingData);
     }
@@ -458,6 +502,7 @@ pub fn decode_response(frame: &[u8]) -> Result<ResponseEnvelope, FrameError> {
         profile_id,
         kill_switch_active,
         code,
+        statistics,
     })
 }
 
@@ -704,6 +749,14 @@ impl<'a> Cursor<'a> {
         Ok(u16::from_le_bytes(self.bytes()?))
     }
 
+    fn u64(&mut self) -> Result<u64, FrameError> {
+        Ok(u64::from_le_bytes(self.bytes()?))
+    }
+
+    fn i64(&mut self) -> Result<i64, FrameError> {
+        Ok(i64::from_le_bytes(self.bytes()?))
+    }
+
     fn bounded_string(&mut self) -> Result<String, FrameError> {
         let value = self.string()?;
         if value.is_empty() || value.as_bytes().contains(&0) {
@@ -835,6 +888,11 @@ mod frame_tests {
             },
             RequestEnvelope {
                 contract_version: CONTRACT_VERSION,
+                request_id: "statistics-1".into(),
+                command: ControlCommand::Statistics,
+            },
+            RequestEnvelope {
+                contract_version: CONTRACT_VERSION,
                 request_id: "import-1".into(),
                 command: ControlCommand::ImportWireGuardProfile(ImportWireGuardProfileRequest {
                     operation_id: "provision-1".into(),
@@ -899,6 +957,11 @@ mod frame_tests {
             profile_id: Some("profile-1".into()),
             kill_switch_active: false,
             code: "ENGINE_NOT_INSTALLED".into(),
+            statistics: Some(TunnelStatistics {
+                bytes_received: 1024,
+                bytes_sent: 2048,
+                last_handshake_unix_ms: Some(1_700_000_000_000),
+            }),
         };
         let encoded = encode_response(&response).expect("valid response");
         assert_eq!(decode_response(&encoded), Ok(response));
@@ -914,6 +977,7 @@ mod frame_tests {
                 profile_id: None,
                 kill_switch_active: false,
                 code: code.into(),
+                statistics: None,
             };
             assert_eq!(
                 encode_response(&response),

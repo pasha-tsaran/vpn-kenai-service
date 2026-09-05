@@ -211,7 +211,7 @@ fn valid_handle(value: &str) -> bool {
         && value[3..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn apply_service_acl(path: &Path) -> io::Result<()> {
+pub(super) fn apply_service_acl(path: &Path) -> io::Result<()> {
     let sddl = to_wide("D:P(A;;FA;;;SY)(A;;FA;;;BA)");
     let mut descriptor = ptr::null_mut();
     // SAFETY: the input is NUL terminated and the descriptor out-pointer is

@@ -88,13 +88,20 @@ powershell -NoProfile -File tool/verify-stage1.ps1
 powershell -NoProfile -File tool/verify-stage7.ps1
 powershell -NoProfile -File tool/verify-stage9.ps1
 powershell -NoProfile -File tool/verify-stage10.ps1
+powershell -NoProfile -File tool/verify-stage11.ps1
 ```
 
 Stage 10 adds strict WireGuard configuration parsing plus typed profile
 provisioning into the Windows service. Profiles are stored only as
 DPAPI-encrypted blobs under a SYSTEM/Administrators-only directory and are
-addressed by random opaque handles. The real WireGuard tunnel engine remains
-disabled until stage 11.
+addressed by random opaque handles. The real tunnel engine was intentionally
+disabled through stage 10.
+
+Stage 11 integrates the official WireGuard for Windows embeddable service.
+The privileged service verifies pinned DLL hashes, controls one fixed tunnel,
+removes temporary plaintext after startup, and exposes traffic/handshake data
+through bounded IPC. AmneziaWG and VLESS remain explicitly unavailable until
+their separate engine stages.
 
 Запуск mock UI после bootstrap:
 

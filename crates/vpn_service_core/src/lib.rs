@@ -5,8 +5,8 @@
 use std::collections::{HashSet, VecDeque};
 
 use vpn_contracts::{
-    ConnectRequest, ConnectionPhase, ControlCommand, RequestEnvelope, StateEvent, WireGuardProfile,
-    CONTRACT_VERSION,
+    ConnectRequest, ConnectionPhase, ControlCommand, RequestEnvelope, StateEvent, TunnelStatistics,
+    WireGuardProfile, CONTRACT_VERSION,
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -20,6 +20,54 @@ pub enum CommandError {
     InvalidProfile,
     ProfileNotFound,
     ProfileStoreUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendFailure {
+    EngineUnavailable,
+    NoNetwork,
+    ServerUnavailable,
+    InvalidProfile,
+    UnsupportedFeature,
+    Internal,
+}
+
+pub trait VpnBackend {
+    fn connect(
+        &mut self,
+        profile_id: &str,
+        profile: &WireGuardProfile,
+        kill_switch: bool,
+    ) -> Result<(), BackendFailure>;
+    fn disconnect(&mut self) -> Result<(), BackendFailure>;
+    fn is_connected(&self) -> Result<bool, BackendFailure>;
+    fn statistics(&self) -> Result<TunnelStatistics, BackendFailure>;
+}
+
+#[derive(Debug, Default)]
+pub struct UnavailableVpnBackend;
+
+impl VpnBackend for UnavailableVpnBackend {
+    fn connect(
+        &mut self,
+        _profile_id: &str,
+        _profile: &WireGuardProfile,
+        _kill_switch: bool,
+    ) -> Result<(), BackendFailure> {
+        Err(BackendFailure::EngineUnavailable)
+    }
+
+    fn disconnect(&mut self) -> Result<(), BackendFailure> {
+        Ok(())
+    }
+
+    fn is_connected(&self) -> Result<bool, BackendFailure> {
+        Ok(false)
+    }
+
+    fn statistics(&self) -> Result<TunnelStatistics, BackendFailure> {
+        Err(BackendFailure::EngineUnavailable)
+    }
 }
 
 pub trait ProfileVault {
@@ -68,32 +116,42 @@ pub struct CommandOutcome {
     pub request_id: String,
     pub state: StateEvent,
     pub code: &'static str,
+    pub statistics: Option<TunnelStatistics>,
 }
 
 #[derive(Debug)]
-pub struct ServiceCommandProcessor<V = UnavailableProfileVault> {
+pub struct ServiceCommandProcessor<V = UnavailableProfileVault, B = UnavailableVpnBackend> {
     machine: ConnectionStateMachine,
     recent_ids: VecDeque<String>,
     recent_id_set: HashSet<String>,
     vault: V,
+    backend: B,
 }
 
-impl Default for ServiceCommandProcessor<UnavailableProfileVault> {
+impl Default for ServiceCommandProcessor<UnavailableProfileVault, UnavailableVpnBackend> {
     fn default() -> Self {
         Self::new(UnavailableProfileVault)
     }
 }
 
-impl<V: ProfileVault> ServiceCommandProcessor<V> {
+impl<V: ProfileVault> ServiceCommandProcessor<V, UnavailableVpnBackend> {
+    #[must_use]
+    pub fn new(vault: V) -> Self {
+        Self::with_backend(vault, UnavailableVpnBackend)
+    }
+}
+
+impl<V: ProfileVault, B: VpnBackend> ServiceCommandProcessor<V, B> {
     const MAX_RECENT_REQUESTS: usize = 256;
 
     #[must_use]
-    pub fn new(vault: V) -> Self {
+    pub fn with_backend(vault: V, backend: B) -> Self {
         Self {
             machine: ConnectionStateMachine::default(),
             recent_ids: VecDeque::new(),
             recent_id_set: HashSet::new(),
             vault,
+            backend,
         }
     }
 
@@ -110,27 +168,48 @@ impl<V: ProfileVault> ServiceCommandProcessor<V> {
         }
         self.remember(request.request_id.clone());
 
-        let (code, returned_profile_id) = match request.command {
-            ControlCommand::Status => ("OK", None),
-            ControlCommand::Diagnostics => ("DIAGNOSTICS_REDACTED", None),
+        let (code, returned_profile_id, statistics) = match request.command {
+            ControlCommand::Status => (self.reconcile_status()?, None, None),
+            ControlCommand::Diagnostics => ("DIAGNOSTICS_REDACTED", None, None),
             ControlCommand::Connect(connect) => {
                 if self.machine.state().phase.is_failure() {
                     self.machine.reset_failure()?;
                 }
                 self.machine.begin_connect(&connect)?;
                 self.machine.mark_validated()?;
-                self.machine
-                    .fail(ConnectionPhase::Error, "ENGINE_NOT_INSTALLED")?;
-                ("ENGINE_NOT_INSTALLED", None)
+                let result = if connect.protocol == vpn_contracts::Protocol::WireGuard {
+                    let profile = self.vault.load_wireguard(&connect.profile_id)?;
+                    self.backend
+                        .connect(&connect.profile_id, &profile, connect.kill_switch)
+                } else {
+                    Err(BackendFailure::UnsupportedFeature)
+                };
+                match result {
+                    Ok(()) => {
+                        self.machine.mark_connected(false)?;
+                        ("CONNECTED", None, None)
+                    }
+                    Err(failure) => {
+                        let (phase, code) = backend_failure(failure);
+                        self.machine.fail(phase, code)?;
+                        (code, None, None)
+                    }
+                }
             }
             ControlCommand::Disconnect { operation_id } => {
                 if self.machine.state().phase.is_failure() {
+                    self.backend
+                        .disconnect()
+                        .map_err(|_| CommandError::ProfileStoreUnavailable)?;
                     self.machine.reset_failure()?;
                 } else {
                     self.machine.begin_disconnect(&operation_id)?;
+                    self.backend
+                        .disconnect()
+                        .map_err(|_| CommandError::ProfileStoreUnavailable)?;
                     self.machine.mark_disconnected()?;
                 }
-                ("DISCONNECTED", None)
+                ("DISCONNECTED", None, None)
             }
             ControlCommand::ImportWireGuardProfile(import) => {
                 if import.operation_id.trim().is_empty() {
@@ -144,7 +223,7 @@ impl<V: ProfileVault> ServiceCommandProcessor<V> {
                 if !valid_profile_id(&profile_id) {
                     return Err(CommandError::ProfileStoreUnavailable);
                 }
-                ("PROFILE_STORED", Some(profile_id))
+                ("PROFILE_STORED", Some(profile_id), None)
             }
             ControlCommand::DeleteProfile {
                 operation_id,
@@ -157,8 +236,15 @@ impl<V: ProfileVault> ServiceCommandProcessor<V> {
                     return Err(CommandError::EmptyProfileId);
                 }
                 self.vault.delete(&profile_id)?;
-                ("PROFILE_DELETED", None)
+                ("PROFILE_DELETED", None, None)
             }
+            ControlCommand::Statistics => match self.backend.statistics() {
+                Ok(statistics) => ("OK", None, Some(statistics)),
+                Err(failure) => {
+                    let (_, code) = backend_failure(failure);
+                    (code, None, None)
+                }
+            },
         };
         let mut state = self.machine.state().clone();
         if returned_profile_id.is_some() {
@@ -168,6 +254,7 @@ impl<V: ProfileVault> ServiceCommandProcessor<V> {
             request_id: request.request_id,
             state,
             code,
+            statistics,
         })
     }
 
@@ -179,6 +266,40 @@ impl<V: ProfileVault> ServiceCommandProcessor<V> {
         }
         self.recent_id_set.insert(request_id.clone());
         self.recent_ids.push_back(request_id);
+    }
+
+    fn reconcile_status(&mut self) -> Result<&'static str, CommandError> {
+        if !matches!(
+            self.machine.state().phase,
+            ConnectionPhase::Connected | ConnectionPhase::Reconnecting
+        ) {
+            return Ok("OK");
+        }
+        match self.backend.is_connected() {
+            Ok(true) => Ok("OK"),
+            Ok(false) => {
+                self.machine.reconcile_disconnected();
+                Ok("TUNNEL_STOPPED")
+            }
+            Err(failure) => {
+                let (phase, code) = backend_failure(failure);
+                self.machine.fail(phase, code)?;
+                Ok(code)
+            }
+        }
+    }
+}
+
+const fn backend_failure(failure: BackendFailure) -> (ConnectionPhase, &'static str) {
+    match failure {
+        BackendFailure::EngineUnavailable => (ConnectionPhase::Error, "ENGINE_NOT_INSTALLED"),
+        BackendFailure::NoNetwork => (ConnectionPhase::NoNetwork, "NO_NETWORK"),
+        BackendFailure::ServerUnavailable => {
+            (ConnectionPhase::ServerUnavailable, "SERVER_UNAVAILABLE")
+        }
+        BackendFailure::InvalidProfile => (ConnectionPhase::Error, "INVALID_PROFILE"),
+        BackendFailure::UnsupportedFeature => (ConnectionPhase::Error, "UNSUPPORTED_FEATURE"),
+        BackendFailure::Internal => (ConnectionPhase::Error, "ENGINE_FAILED"),
     }
 }
 
@@ -272,6 +393,11 @@ impl ConnectionStateMachine {
         Ok(())
     }
 
+    /// Reconciles cached state after the operating-system tunnel stopped out of band.
+    pub fn reconcile_disconnected(&mut self) {
+        self.state = StateEvent::default();
+    }
+
     pub fn fail(
         &mut self,
         phase: ConnectionPhase,
@@ -327,6 +453,46 @@ mod tests {
             } else {
                 Err(CommandError::ProfileNotFound)
             }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct WorkingBackend {
+        connected: bool,
+    }
+
+    impl VpnBackend for WorkingBackend {
+        fn connect(
+            &mut self,
+            _profile_id: &str,
+            _profile: &WireGuardProfile,
+            kill_switch: bool,
+        ) -> Result<(), BackendFailure> {
+            if kill_switch {
+                return Err(BackendFailure::UnsupportedFeature);
+            }
+            self.connected = true;
+            Ok(())
+        }
+
+        fn disconnect(&mut self) -> Result<(), BackendFailure> {
+            self.connected = false;
+            Ok(())
+        }
+
+        fn is_connected(&self) -> Result<bool, BackendFailure> {
+            Ok(self.connected)
+        }
+
+        fn statistics(&self) -> Result<TunnelStatistics, BackendFailure> {
+            if !self.connected {
+                return Err(BackendFailure::EngineUnavailable);
+            }
+            Ok(TunnelStatistics {
+                bytes_received: 200,
+                bytes_sent: 100,
+                last_handshake_unix_ms: Some(1_700_000_000_000),
+            })
         }
     }
 
@@ -448,7 +614,9 @@ mod tests {
             request_id: "connect-request-1".into(),
             command: ControlCommand::Connect(request()),
         };
-        let mut processor = ServiceCommandProcessor::default();
+        let mut vault = MemoryVault::default();
+        vault.store_wireguard(&profile()).expect("stored profile");
+        let mut processor = ServiceCommandProcessor::new(vault);
 
         let outcome = processor
             .process(authorized(), request)
@@ -498,5 +666,95 @@ mod tests {
             .expect("profile deleted");
         assert_eq!(deleted.code, "PROFILE_DELETED");
         assert_eq!(deleted.state.profile_id, None);
+    }
+
+    #[test]
+    fn working_backend_connects_reports_statistics_and_disconnects() {
+        let mut vault = MemoryVault::default();
+        vault.store_wireguard(&profile()).expect("stored profile");
+        let mut processor = ServiceCommandProcessor::with_backend(vault, WorkingBackend::default());
+        let connected = processor
+            .process(
+                authorized(),
+                RequestEnvelope {
+                    contract_version: CONTRACT_VERSION,
+                    request_id: "connect-working-1".into(),
+                    command: ControlCommand::Connect(ConnectRequest {
+                        operation_id: "connect-operation-1".into(),
+                        profile_id: "wg-0011223344556677".into(),
+                        protocol: Protocol::WireGuard,
+                        kill_switch: false,
+                    }),
+                },
+            )
+            .expect("connect processed");
+        assert_eq!(connected.code, "CONNECTED");
+        assert_eq!(connected.state.phase, ConnectionPhase::Connected);
+
+        let statistics = processor
+            .process(
+                authorized(),
+                RequestEnvelope {
+                    contract_version: CONTRACT_VERSION,
+                    request_id: "statistics-working-1".into(),
+                    command: ControlCommand::Statistics,
+                },
+            )
+            .expect("statistics processed");
+        assert_eq!(
+            statistics.statistics.expect("statistics").bytes_received,
+            200
+        );
+
+        let disconnected = processor
+            .process(
+                authorized(),
+                RequestEnvelope {
+                    contract_version: CONTRACT_VERSION,
+                    request_id: "disconnect-working-1".into(),
+                    command: ControlCommand::Disconnect {
+                        operation_id: "disconnect-operation-1".into(),
+                    },
+                },
+            )
+            .expect("disconnect processed");
+        assert_eq!(disconnected.state.phase, ConnectionPhase::Disconnected);
+    }
+
+    #[test]
+    fn status_reconciles_an_out_of_band_tunnel_stop() {
+        let mut vault = MemoryVault::default();
+        vault.store_wireguard(&profile()).expect("stored profile");
+        let mut processor = ServiceCommandProcessor::with_backend(vault, WorkingBackend::default());
+        processor
+            .process(
+                authorized(),
+                RequestEnvelope {
+                    contract_version: CONTRACT_VERSION,
+                    request_id: "connect-before-crash-1".into(),
+                    command: ControlCommand::Connect(ConnectRequest {
+                        operation_id: "connect-before-crash-operation-1".into(),
+                        profile_id: "wg-0011223344556677".into(),
+                        protocol: Protocol::WireGuard,
+                        kill_switch: false,
+                    }),
+                },
+            )
+            .expect("connect processed");
+        processor.backend.connected = false;
+
+        let status = processor
+            .process(
+                authorized(),
+                RequestEnvelope {
+                    contract_version: CONTRACT_VERSION,
+                    request_id: "status-after-crash-1".into(),
+                    command: ControlCommand::Status,
+                },
+            )
+            .expect("status processed");
+
+        assert_eq!(status.code, "TUNNEL_STOPPED");
+        assert_eq!(status.state.phase, ConnectionPhase::Disconnected);
     }
 }

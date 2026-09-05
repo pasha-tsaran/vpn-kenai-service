@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 vpn_contracts = { path = "../../crates/vpn_contracts" }
 vpn_service_core = { path = "../../crates/vpn_service_core" }
+base64 = "=0.22.1"
+sha2 = "=0.10.9"
+zeroize = "=1.8.2"
 
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "=1.47.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
@@ -17,6 +20,7 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_Security_Authorization",
   "Win32_Security_Cryptography",
   "Win32_System_Memory",
+  "Win32_System_LibraryLoader",
   "Win32_System_Pipes",
   "Win32_System_RemoteDesktop",
 ] }

@@ -69,12 +69,13 @@ final class _FakeTransport implements ProfileIpcTransport {
       0,
       code.length,
       ...code.codeUnits,
+      0,
     ];
     final Uint8List response = Uint8List(12 + body.length)
       ..setRange(0, 4, const <int>[0x4b, 0x56, 0x50, 0x4e])
       ..setRange(12, 12 + body.length, body);
     ByteData.sublistView(response)
-      ..setUint16(4, 1, Endian.little)
+      ..setUint16(4, 2, Endian.little)
       ..setUint8(6, 0x81)
       ..setUint32(8, body.length, Endian.little);
     return response;

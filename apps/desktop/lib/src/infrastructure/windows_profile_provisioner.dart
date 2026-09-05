@@ -7,7 +7,7 @@ import 'package:kenai_core/kenai_core.dart';
 
 import 'wireguard_config_parser.dart';
 
-const String _pipeName = r'\\.\pipe\KenaiVpnControl-v1';
+const String _pipeName = r'\\.\pipe\KenaiVpnControl-v2';
 const int _maximumFrameSize = 16 * 1024;
 
 final class ProfileProvisioningException implements Exception {
@@ -182,7 +182,7 @@ Uint8List _frame(int opcode, Uint8List body) {
   final Uint8List frame = Uint8List(body.length + 12);
   frame.setRange(0, 4, const <int>[0x4b, 0x56, 0x50, 0x4e]);
   ByteData.sublistView(frame)
-    ..setUint16(4, 1, Endian.little)
+    ..setUint16(4, 2, Endian.little)
     ..setUint8(6, opcode)
     ..setUint8(7, 0)
     ..setUint32(8, body.length, Endian.little);
@@ -230,7 +230,7 @@ _ProfileResponse _decodeResponse(Uint8List frame, String expectedRequestId) {
       frame[1] != 0x56 ||
       frame[2] != 0x50 ||
       frame[3] != 0x4e ||
-      data.getUint16(4, Endian.little) != 1 ||
+      data.getUint16(4, Endian.little) != 2 ||
       frame[6] != 0x81 ||
       frame[7] != 0 ||
       data.getUint32(8, Endian.little) != frame.length - 12) {
@@ -250,6 +250,18 @@ _ProfileResponse _decodeResponse(Uint8List frame, String expectedRequestId) {
     throw const ProfileProvisioningException('INVALID_RESPONSE');
   }
   final String code = cursor.string();
+  final int hasStatistics = cursor.byte();
+  if (hasStatistics == 1) {
+    cursor.skip(16);
+    final int hasHandshake = cursor.byte();
+    if (hasHandshake == 1) {
+      cursor.skip(8);
+    } else if (hasHandshake != 0) {
+      throw const ProfileProvisioningException('INVALID_RESPONSE');
+    }
+  } else if (hasStatistics != 0) {
+    throw const ProfileProvisioningException('INVALID_RESPONSE');
+  }
   if (!cursor.finished ||
       requestId != expectedRequestId ||
       !_validIdentifier(code) ||
@@ -290,5 +302,12 @@ final class _Cursor {
     final String value = String.fromCharCodes(bytes.sublist(offset, end));
     offset = end;
     return value;
+  }
+
+  void skip(int length) {
+    if (length < 0 || offset + length > bytes.length) {
+      throw const ProfileProvisioningException('INVALID_RESPONSE');
+    }
+    offset += length;
   }
 }

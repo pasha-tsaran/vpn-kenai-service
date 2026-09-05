@@ -136,19 +136,17 @@ foreach ($phase in $phaseContracts) {
     }
 }
 
-$implementationRoots = @(
+$clientRoots = @(
     (Join-Path $repoRoot 'apps'),
-    (Join-Path $repoRoot 'packages'),
-    (Join-Path $repoRoot 'crates'),
-    (Join-Path $repoRoot 'services')
+    (Join-Path $repoRoot 'packages')
 )
 $forbidden = 'CreateServiceW|StartServiceW|FwpmEngineOpen|WireGuardOpenAdapter|wintun\.dll|wireguard\.dll|xray\.exe|amneziawg\.exe|netsh\s|Set-DnsClient|New-NetRoute'
-$matches = Get-ChildItem -LiteralPath $implementationRoots -File -Recurse |
+$matches = Get-ChildItem -LiteralPath $clientRoots -File -Recurse |
     Where-Object { $_.Extension -in '.dart', '.rs', '.cpp', '.h', '.ps1' } |
     Select-String -Pattern $forbidden
 if ($matches) {
     $matches | ForEach-Object { Write-Error $_.Line }
-    throw 'Forbidden production/system integration found in stage 1.'
+    throw 'Forbidden system integration found outside the privileged service boundary.'
 }
 
 Write-Output 'Stage 1 structure, ports and system-integration boundary: OK'

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package kenai.vpn.v1;
+package kenai.vpn.v2;
 
 service VpnControl {
   rpc GetState(GetStateRequest) returns (StateEvent);
@@ -70,6 +70,7 @@ message StatisticsResponse {
   uint64 bytes_received = 1;
   uint64 bytes_sent = 2;
   int64 measured_at_unix_ms = 3;
+  optional int64 last_handshake_unix_ms = 4;
 }
 
 message ValidationResponse {
