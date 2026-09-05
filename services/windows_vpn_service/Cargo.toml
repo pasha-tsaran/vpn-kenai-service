@@ -1,0 +1,29 @@
+[package]
+name = "kenai_windows_vpn_service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vpn_contracts = { path = "../../crates/vpn_contracts" }
+vpn_service_core = { path = "../../crates/vpn_service_core" }
+
+[target.'cfg(windows)'.dependencies]
+tokio = { version = "=1.47.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
+windows-service = "=0.8.1"
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Memory",
+  "Win32_System_Pipes",
+  "Win32_System_RemoteDesktop",
+] }
+
+[lints.rust]
+unsafe_code = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "deny"
+pedantic = "warn"

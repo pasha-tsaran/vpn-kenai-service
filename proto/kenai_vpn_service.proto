@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package kenai.vpn.v1;
+
+service VpnControl {
+  rpc GetState(GetStateRequest) returns (StateEvent);
+  rpc Connect(ConnectRequest) returns (OperationAccepted);
+  rpc Disconnect(DisconnectRequest) returns (OperationAccepted);
+  rpc WatchState(WatchStateRequest) returns (stream StateEvent);
+  rpc GetStatistics(GetStatisticsRequest) returns (StatisticsResponse);
+  rpc ValidateProfile(ValidateProfileRequest) returns (ValidationResponse);
+  rpc CollectDiagnostics(CollectDiagnosticsRequest) returns (DiagnosticsResponse);
+}
+message GetStateRequest {}
+
+message ConnectRequest {
+  string operation_id = 1;
+  string profile_id = 2;
+  Protocol protocol = 3;
+  bool kill_switch = 4;
+}
+
+message DisconnectRequest { string operation_id = 1; }
+message WatchStateRequest {}
+message GetStatisticsRequest {}
+message ValidateProfileRequest { string profile_id = 1; }
+message CollectDiagnosticsRequest {}
+
+message OperationAccepted {
+  string operation_id = 1;
+  bool accepted = 2;
+  string error_code = 3;
+}
+
+message StateEvent {
+  uint32 contract_version = 1;
+  ConnectionPhase phase = 2;
+  string profile_id = 3;
+  bool kill_switch_active = 4;
+  string error_code = 5;
+}
+
+message StatisticsResponse {
+  uint64 bytes_received = 1;
+  uint64 bytes_sent = 2;
+  int64 measured_at_unix_ms = 3;
+}
+
+message ValidationResponse {
+  bool valid = 1;
+  string error_code = 2;
+}
+
+message DiagnosticsResponse {
+  ConnectionPhase phase = 1;
+  bool service_available = 2;
+  bool network_available = 3;
+  repeated string codes = 4;
+}
+
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_WIREGUARD = 1;
+  PROTOCOL_AMNEZIAWG = 2;
+  PROTOCOL_VLESS_REALITY = 3;
+}
+
+enum ConnectionPhase {
+  CONNECTION_PHASE_UNSPECIFIED = 0;
+  CONNECTION_PHASE_DISCONNECTED = 1;
+  CONNECTION_PHASE_VALIDATING = 2;
+  CONNECTION_PHASE_CONNECTING = 3;
+  CONNECTION_PHASE_CONNECTED = 4;
+  CONNECTION_PHASE_RECONNECTING = 5;
+  CONNECTION_PHASE_DISCONNECTING = 6;
+  CONNECTION_PHASE_BLOCKED_BY_SUBSCRIPTION = 7;
+  CONNECTION_PHASE_NO_NETWORK = 8;
+  CONNECTION_PHASE_SERVER_UNAVAILABLE = 9;
+  CONNECTION_PHASE_ERROR = 10;
+}

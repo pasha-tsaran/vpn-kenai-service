@@ -1,0 +1,46 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  flutter:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed apps packages
+      - run: dart analyze .
+      - working-directory: packages/kenai_core
+        run: dart test
+      - working-directory: apps/desktop
+        run: flutter test
+      - working-directory: apps/desktop
+        run: flutter build windows --release
+
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  boundaries:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: powershell
+        run: ./tool/verify-stage1.ps1
+      - shell: powershell
+        run: ./tool/verify-stage7.ps1
+      - shell: powershell
+        run: ./tool/verify-stage9.ps1
