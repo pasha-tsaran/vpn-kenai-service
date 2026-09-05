@@ -180,10 +180,27 @@ void main() {
     await tester.pump();
     await fixture.engine.dispose();
   });
+
+  testWidgets('minimal release navigation hides unfinished sections', (
+    WidgetTester tester,
+  ) async {
+    final ({AppDependencies dependencies, MockVpnEngine engine}) fixture =
+        _fixture(minimalMvpMode: true);
+    addTearDown(fixture.engine.dispose);
+    await tester.pumpWidget(buildKenaiApp(dependencies: fixture.dependencies));
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(Icons.credit_card_outlined), findsNothing);
+    expect(find.byIcon(Icons.monitor_heart_outlined), findsNothing);
+    expect(find.byIcon(Icons.speed_outlined), findsNothing);
+    expect(find.byIcon(Icons.person_outline), findsOneWidget);
+    expect(find.byIcon(Icons.tune_outlined), findsOneWidget);
+  });
 }
 
 ({AppDependencies dependencies, MockVpnEngine engine}) _fixture({
   bool includeTestServers = true,
+  bool minimalMvpMode = false,
 }) {
   final MockApiClient api = MockApiClient(
     includeTestServers: includeTestServers,
@@ -216,6 +233,7 @@ void main() {
       ),
       diagnosticExporter: MockDiagnosticExporter(),
       diagnosticArchiveSaver: InMemoryDiagnosticArchiveSaver(),
+      minimalMvpMode: minimalMvpMode,
     ),
     engine: engine,
   );

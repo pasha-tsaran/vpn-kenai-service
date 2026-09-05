@@ -19,8 +19,7 @@ void main() {
     }
   });
 
-  test('activation uses the real contract and retains only WireGuard',
-      () async {
+  test('activation retains all three bounded production profiles', () async {
     final _RecordingApiClient transport = _RecordingApiClient(
       response: const ApiResponse(
         statusCode: 200,
@@ -54,8 +53,12 @@ void main() {
     expect(result.account.id, 'account-1');
     expect(result.subscription.status, SubscriptionStatus.active);
     expect(result.subscription.lastVerifiedAt, DateTime.utc(2026, 9, 5, 12));
-    expect(result.vpnCredentials.keys, <VpnProtocol>[VpnProtocol.wireGuard]);
-    expect(result.vpnCredentials.values.single, isNot(contains('ignored')));
+    expect(result.vpnCredentials, <VpnProtocol, String>{
+      VpnProtocol.wireGuard:
+          '[Interface]\nPrivateKey=fake\n[Peer]\nPublicKey=fake',
+      VpnProtocol.amneziaWg: 'ignored-awg-secret',
+      VpnProtocol.vlessReality: 'ignored-vless-secret',
+    });
   });
 
   test('activation maps safe HTTP and transport failures', () async {
@@ -112,6 +115,8 @@ void main() {
             'account': <String, Object?>{'id': 'account-1'},
             'protocols': <String, Object?>{
               'wireguard': 'private-secret-without-sections',
+              'amneziawg': 'awg-secret',
+              'vless': 'vless-secret',
             },
           },
         ),

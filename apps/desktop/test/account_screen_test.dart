@@ -142,6 +142,42 @@ void main() {
     );
     expect(find.textContaining(key), findsNothing);
   });
+
+  testWidgets('keeps account data when VPN stop cannot be confirmed', (
+    WidgetTester tester,
+  ) async {
+    final UnavailableVpnEngine unavailable = UnavailableVpnEngine();
+    final _AccountFixture fixture = _fixture(vpnEngine: unavailable);
+    await fixture.repository.activate(
+      ActivationKey.parse(_testActivationKey()),
+    );
+    await unavailable.connect(
+      const ConnectionRequest(
+        operationId: 'connect-before-sign-out',
+        profile: VpnProfile(
+          id: 'profile-1',
+          deviceId: 'device-1',
+          serverId: 'armenia-1',
+          protocol: VpnProtocol.wireGuard,
+        ),
+        killSwitch: false,
+      ),
+    );
+    await _openAccount(tester, fixture.dependencies);
+
+    await tester.tap(find.byKey(const Key('sign-out')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('confirm-sign-out')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'Не удалось безопасно остановить VPN. Данные аккаунта сохранены; повторите выход.',
+      ),
+      findsOneWidget,
+    );
+    expect(await fixture.storage.read('account.activation_key'), isNotNull);
+  });
 }
 
 final class _AccountFixture {
@@ -160,6 +196,7 @@ final class _AccountFixture {
 
 _AccountFixture _fixture({
   MockActivationScenario scenario = MockActivationScenario.active,
+  VpnEngine? vpnEngine,
 }) {
   final MockApiClient apiClient = MockApiClient();
   final MockActivationApiClient activationApi = MockActivationApiClient(
@@ -178,7 +215,7 @@ _AccountFixture _fixture({
       apiClient: apiClient,
       secureStorage: storage,
       accountRepository: repository,
-      vpnEngine: MockVpnEngine(),
+      vpnEngine: vpnEngine ?? MockVpnEngine(),
       serverRepository: MockServerRepository(apiClient: apiClient),
       settingsRepository: MockSettingsRepository(),
       platformCapabilities: const ClientPlatformCapabilities.unavailable(),

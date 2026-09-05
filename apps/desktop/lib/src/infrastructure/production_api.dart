@@ -175,6 +175,16 @@ final class ProductionActivationApiClient implements ActivationApiClient {
       if (!wireGuard.contains('[Interface]') || !wireGuard.contains('[Peer]')) {
         throw const FormatException('Invalid WireGuard profile');
       }
+      final String amneziaWg = _requiredString(
+        protocols,
+        'amneziawg',
+        maximumLength: 64 * 1024,
+      );
+      final String vless = _requiredString(
+        protocols,
+        'vless',
+        maximumLength: 8 * 1024,
+      );
       return ActivationResult(
         account: Account(
           id: _requiredString(account, 'id', maximumLength: 128),
@@ -197,10 +207,10 @@ final class ProductionActivationApiClient implements ActivationApiClient {
           deviceLimit: 1,
           lastVerifiedAt: _now().toUtc(),
         ),
-        // The MVP intentionally retains only WireGuard. The current server
-        // returns AWG/Xray too; those values are ignored and never persisted.
         vpnCredentials: <VpnProtocol, String>{
           VpnProtocol.wireGuard: wireGuard,
+          VpnProtocol.amneziaWg: amneziaWg,
+          VpnProtocol.vlessReality: vless,
         },
       );
     } on FormatException {

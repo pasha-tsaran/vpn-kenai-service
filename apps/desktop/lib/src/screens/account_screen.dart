@@ -413,9 +413,19 @@ final class _AccountScreenState extends State<AccountScreen> {
         await widget.dependencies.vpnEngine.disconnect(
           operationId: 'account-sign-out',
         );
+      } else if (state.phase != VpnConnectionPhase.disconnected) {
+        vpnStopped = false;
       }
     } on Object {
       vpnStopped = false;
+    }
+    if (!vpnStopped) {
+      if (mounted) {
+        _showMessage(
+          'Не удалось безопасно остановить VPN. Данные аккаунта сохранены; повторите выход.',
+        );
+      }
+      return;
     }
     try {
       await widget.dependencies.accountRepository.signOut();
@@ -425,11 +435,7 @@ final class _AccountScreenState extends State<AccountScreen> {
         _revealedKey = null;
         _safeError = null;
       });
-      _showMessage(
-        vpnStopped
-            ? 'Локальные данные аккаунта удалены.'
-            : 'Данные удалены, но VPN не удалось остановить автоматически.',
-      );
+      _showMessage('Локальные данные аккаунта удалены.');
     } on Object {
       if (mounted) {
         _showMessage('Не удалось удалить локальные данные. Повторите попытку.');

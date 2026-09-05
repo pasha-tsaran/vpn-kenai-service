@@ -90,7 +90,7 @@ final class UnavailableVpnEngine implements VpnEngine {
       );
 }
 
-/// One-server production repository for the WireGuard-first MVP.
+/// One-server production repository; protocols expand only with real engines.
 final class ArmeniaMvpServerRepository implements ServerRepository {
   ArmeniaMvpServerRepository();
 

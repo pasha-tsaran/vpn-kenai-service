@@ -9,6 +9,7 @@ import 'src/infrastructure/platform_diagnostics.dart';
 import 'src/infrastructure/platform_secure_storage.dart';
 import 'src/infrastructure/production_api.dart';
 import 'src/infrastructure/windows_profile_provisioner.dart';
+import 'src/infrastructure/windows_vpn_engine.dart';
 
 const bool _testServersFromEnvironment = bool.fromEnvironment(
   'KENAI_ENABLE_TEST_SERVERS',
@@ -37,7 +38,7 @@ Widget buildKenaiApp({
         ? const UnavailableApiClient()
         : DartIoApiClient(baseUri: baseUri);
     activationApiClient = ProductionActivationApiClient(apiClient: apiClient);
-    vpnEngine = UnavailableVpnEngine();
+    vpnEngine = WindowsVpnEngine(secureStorage: secureStorage);
     serverRepository = ArmeniaMvpServerRepository();
     subscriptionRepository = const UnavailableSubscriptionRepository();
   } else {
@@ -100,6 +101,7 @@ Widget buildKenaiApp({
       diagnosticLogger: diagnostics,
       diagnosticExporter: diagnostics,
       diagnosticArchiveSaver: DownloadsDiagnosticArchiveSaver(),
+      minimalMvpMode: kReleaseMode,
     ),
   );
 }
@@ -121,6 +123,7 @@ final class AppDependencies {
     required this.diagnosticLogger,
     required this.diagnosticExporter,
     required this.diagnosticArchiveSaver,
+    this.minimalMvpMode = false,
   });
 
   final ApiClient apiClient;
@@ -138,4 +141,5 @@ final class AppDependencies {
   final DiagnosticLogger diagnosticLogger;
   final DiagnosticExporter diagnosticExporter;
   final DiagnosticArchiveSaver diagnosticArchiveSaver;
+  final bool minimalMvpMode;
 }

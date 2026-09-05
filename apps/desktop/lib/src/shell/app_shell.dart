@@ -24,22 +24,32 @@ final class AppShell extends StatefulWidget {
 final class _AppShellState extends State<AppShell> {
   AppDestination _destination = AppDestination.servers;
 
+  List<AppDestination> get _destinations => widget.dependencies.minimalMvpMode
+      ? const <AppDestination>[
+          AppDestination.servers,
+          AppDestination.account,
+          AppDestination.vpnSettings,
+          AppDestination.logs,
+          AppDestination.settings,
+        ]
+      : AppDestination.values;
+
   @override
   Widget build(BuildContext context) => Scaffold(
         body: SafeArea(
           child: Row(
             children: <Widget>[
               NavigationRail(
-                selectedIndex: _destination.index,
+                selectedIndex: _destinations.indexOf(_destination),
                 labelType: NavigationRailLabelType.none,
                 onDestinationSelected: (int index) {
-                  setState(() => _destination = AppDestination.values[index]);
+                  setState(() => _destination = _destinations[index]);
                 },
                 leading: const Padding(
                   padding: EdgeInsets.symmetric(vertical: KenaiSpacing.md),
                   child: _KenaiMark(),
                 ),
-                destinations: AppDestination.values
+                destinations: _destinations
                     .map(
                       (AppDestination destination) => NavigationRailDestination(
                         icon: Tooltip(

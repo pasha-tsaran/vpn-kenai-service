@@ -52,4 +52,4 @@ the production API or VPN server.
 AmneziaWG 2.0 and VLESS/REALITY remain separate adapters. They must not reuse
 WireGuard DLLs or pretend to be available. Each needs a pinned upstream,
 privilege review, protocol-specific health checks and an independent release
-gate after the WireGuard-first MVP.
+gate before the all-protocol minimal MVP is released.

@@ -96,7 +96,7 @@ final class WindowsVpnProfileProvisioner implements VpnProfileProvisioner {
     final Uint8List response = await _transport.exchange(
       _encodeImport(requestId, _identifier('provision'), profile),
     );
-    final _ProfileResponse decoded = _decodeResponse(response, requestId);
+    final VpnIpcResponse decoded = decodeVpnIpcResponse(response, requestId);
     if (decoded.code != 'PROFILE_STORED' || decoded.profileId == null) {
       throw ProfileProvisioningException(decoded.code);
     }
@@ -112,7 +112,7 @@ final class WindowsVpnProfileProvisioner implements VpnProfileProvisioner {
     final Uint8List response = await _transport.exchange(
       _encodeDelete(requestId, _identifier('cleanup'), profileId),
     );
-    final _ProfileResponse decoded = _decodeResponse(response, requestId);
+    final VpnIpcResponse decoded = decodeVpnIpcResponse(response, requestId);
     if (decoded.code != 'PROFILE_DELETED' &&
         decoded.code != 'PROFILE_NOT_FOUND') {
       throw ProfileProvisioningException(decoded.code);
@@ -158,7 +158,7 @@ Uint8List _encodeImport(
       ..addByte(1)
       ..add(_u16(profile.persistentKeepalive!));
   }
-  return _frame(5, body.takeBytes());
+  return encodeVpnIpcFrame(5, body.takeBytes());
 }
 
 Uint8List _encodeDelete(
@@ -166,7 +166,7 @@ Uint8List _encodeDelete(
   String operationId,
   String profileId,
 ) =>
-    _frame(
+    encodeVpnIpcFrame(
       6,
       Uint8List.fromList(<int>[
         ..._identifierBytes(requestId),
@@ -175,7 +175,7 @@ Uint8List _encodeDelete(
       ]),
     );
 
-Uint8List _frame(int opcode, Uint8List body) {
+Uint8List encodeVpnIpcFrame(int opcode, Uint8List body) {
   if (body.length + 12 > _maximumFrameSize) {
     throw const ProfileProvisioningException('PROFILE_TOO_LARGE');
   }
@@ -221,7 +221,10 @@ Uint8List _u16(int value) {
   return bytes;
 }
 
-_ProfileResponse _decodeResponse(Uint8List frame, String expectedRequestId) {
+VpnIpcResponse decodeVpnIpcResponse(
+  Uint8List frame,
+  String expectedRequestId,
+) {
   if (frame.length < 12 || frame.length > _maximumFrameSize) {
     throw const ProfileProvisioningException('INVALID_RESPONSE');
   }
@@ -238,7 +241,10 @@ _ProfileResponse _decodeResponse(Uint8List frame, String expectedRequestId) {
   }
   final _Cursor cursor = _Cursor(frame, 12);
   final String requestId = cursor.string();
-  cursor.byte(); // connection phase is irrelevant to provisioning.
+  final int phase = cursor.byte();
+  if (phase > 9) {
+    throw const ProfileProvisioningException('INVALID_RESPONSE');
+  }
   final int hasProfile = cursor.byte();
   final String? profileId = switch (hasProfile) {
     0 => null,
@@ -251,11 +257,15 @@ _ProfileResponse _decodeResponse(Uint8List frame, String expectedRequestId) {
   }
   final String code = cursor.string();
   final int hasStatistics = cursor.byte();
+  int? bytesReceived;
+  int? bytesSent;
+  int? lastHandshakeUnixMs;
   if (hasStatistics == 1) {
-    cursor.skip(16);
+    bytesReceived = cursor.uint64();
+    bytesSent = cursor.uint64();
     final int hasHandshake = cursor.byte();
     if (hasHandshake == 1) {
-      cursor.skip(8);
+      lastHandshakeUnixMs = cursor.int64();
     } else if (hasHandshake != 0) {
       throw const ProfileProvisioningException('INVALID_RESPONSE');
     }
@@ -268,14 +278,35 @@ _ProfileResponse _decodeResponse(Uint8List frame, String expectedRequestId) {
       (profileId != null && !_validIdentifier(profileId))) {
     throw const ProfileProvisioningException('INVALID_RESPONSE');
   }
-  return _ProfileResponse(profileId: profileId, code: code);
+  return VpnIpcResponse(
+    phase: phase,
+    profileId: profileId,
+    killSwitchActive: killSwitch == 1,
+    code: code,
+    bytesReceived: bytesReceived,
+    bytesSent: bytesSent,
+    lastHandshakeUnixMs: lastHandshakeUnixMs,
+  );
 }
 
-final class _ProfileResponse {
-  const _ProfileResponse({required this.profileId, required this.code});
+final class VpnIpcResponse {
+  const VpnIpcResponse({
+    required this.phase,
+    required this.profileId,
+    required this.killSwitchActive,
+    required this.code,
+    required this.bytesReceived,
+    required this.bytesSent,
+    required this.lastHandshakeUnixMs,
+  });
 
+  final int phase;
   final String? profileId;
+  final bool killSwitchActive;
   final String code;
+  final int? bytesReceived;
+  final int? bytesSent;
+  final int? lastHandshakeUnixMs;
 }
 
 final class _Cursor {
@@ -304,10 +335,27 @@ final class _Cursor {
     return value;
   }
 
-  void skip(int length) {
-    if (length < 0 || offset + length > bytes.length) {
+  int uint64() {
+    if (offset + 8 > bytes.length) {
       throw const ProfileProvisioningException('INVALID_RESPONSE');
     }
-    offset += length;
+    final int value = ByteData.sublistView(bytes).getUint64(
+      offset,
+      Endian.little,
+    );
+    offset += 8;
+    return value;
+  }
+
+  int int64() {
+    if (offset + 8 > bytes.length) {
+      throw const ProfileProvisioningException('INVALID_RESPONSE');
+    }
+    final int value = ByteData.sublistView(bytes).getInt64(
+      offset,
+      Endian.little,
+    );
+    offset += 8;
+    return value;
   }
 }

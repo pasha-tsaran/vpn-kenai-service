@@ -38,7 +38,7 @@ $bootstrap = Get-Content -Raw -LiteralPath (
     Join-Path $root 'apps/desktop/lib/bootstrap.dart'
 )
 if ($bootstrap -notmatch 'if \(kReleaseMode\)[\s\S]*ProductionActivationApiClient' -or
-    $bootstrap -notmatch 'if \(kReleaseMode\)[\s\S]*UnavailableVpnEngine' -or
+    $bootstrap -notmatch 'if \(kReleaseMode\)[\s\S]*WindowsVpnEngine' -or
     $bootstrap -notmatch 'else \{[\s\S]*MockActivationApiClient') {
     throw 'Release/development composition boundary is incomplete.'
 }

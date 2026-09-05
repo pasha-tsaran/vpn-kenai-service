@@ -3,6 +3,16 @@ import 'dart:convert';
 import '../domain/models.dart';
 import '../ports/ports.dart';
 
+/// Stable non-secret storage key names shared with platform VPN adapters.
+abstract final class SecureAccountStorageKeys {
+  static const String activationKey = 'account.activation_key';
+  static const String session = 'account.session';
+  static const String wireGuard = 'vpn.wireguard';
+  static const String amneziaWg = 'vpn.amneziawg';
+  static const String vless = 'vpn.vless';
+  static const String profileHandle = 'vpn.profile_handle';
+}
+
 final class SecureAccountRepository implements AccountRepository {
   SecureAccountRepository({
     required ActivationApiClient apiClient,
@@ -12,12 +22,12 @@ final class SecureAccountRepository implements AccountRepository {
         _secureStorage = secureStorage,
         _profileProvisioner = profileProvisioner;
 
-  static const String _activationKey = 'account.activation_key';
-  static const String _session = 'account.session';
-  static const String _wireGuard = 'vpn.wireguard';
-  static const String _amneziaWg = 'vpn.amneziawg';
-  static const String _vless = 'vpn.vless';
-  static const String _profileHandle = 'vpn.profile_handle';
+  static const String _activationKey = SecureAccountStorageKeys.activationKey;
+  static const String _session = SecureAccountStorageKeys.session;
+  static const String _wireGuard = SecureAccountStorageKeys.wireGuard;
+  static const String _amneziaWg = SecureAccountStorageKeys.amneziaWg;
+  static const String _vless = SecureAccountStorageKeys.vless;
+  static const String _profileHandle = SecureAccountStorageKeys.profileHandle;
 
   final ActivationApiClient _apiClient;
   final SecureStorage _secureStorage;

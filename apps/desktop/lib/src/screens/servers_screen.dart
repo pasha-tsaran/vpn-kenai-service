@@ -631,7 +631,8 @@ final class _ServersScreenState extends State<ServersScreen> {
             serverId: server.id,
             protocol: protocol,
           ),
-          killSwitch: true,
+          // Enabled only after the dedicated leak-test gate.
+          killSwitch: false,
         ),
       );
     } on Object {

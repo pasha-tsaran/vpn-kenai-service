@@ -8,17 +8,18 @@ Windows-first, cross-platform-ready client scaffold for Kenai VPN.
 Этапы 0–9 включают архитектурное решение, доменные модели, ports,
 детерминированные mocks, Flutter-навигацию, экраны «Серверы», «Аккаунт» и
 «Тарифы», минимальную Windows-службу, защищённый типизированный IPC и
-production HTTPS-активацию для WireGuard-first MVP.
-Проект пока **не создаёт VPN-туннель и не проводит оплату**. HTTPS-клиент
+production HTTPS-активацию и реальный WireGuard for Windows.
+Release-клиент создаёт WireGuard-туннель через системную службу, но пока не
+является готовым установщиком и не проводит оплату. HTTPS-клиент
 активации обращается к production API только в release-сборке с явно заданным
 `KENAI_API_BASE_URL`.
 
 ## Архитектура
 
 - Flutter/Dart: presentation, navigation и непривилегированные use cases.
-- Rust: общий service contract/state machine и минимальная Windows-служба без VPN-движка.
-- Будущие WireGuard, AmneziaWG и Xray реализации — независимые адаптеры.
-- Системная служба, а не UI, будет владеть tunnel lifecycle, routes, DNS и WFP.
+- Rust: общий service contract/state machine и привилегированная Windows-служба.
+- WireGuard реализован; AmneziaWG и Xray добавляются отдельными адаптерами в следующих этапах.
+- Системная служба, а не UI, владеет tunnel lifecycle, routes и DNS.
 - Секреты доступны только через реализацию `SecureStorage` для конкретной ОС.
 
 Документы:
@@ -30,13 +31,14 @@ production HTTPS-активацию для WireGuard-first MVP.
 - [Требуемые изменения серверного API для этапа 3](docs/server-changes-required-stage3.md)
 - [Тарифы и mock-оплата](docs/architecture/0005-tariffs-and-payments.md)
 - [Требуемый серверный платёжный контракт](docs/server-payments-required-stage4.md)
-- [Порядок этапов до WireGuard-first MVP](docs/continuation-prompts.md)
+- [Порядок этапов до минимально рабочего MVP](docs/continuation-prompts.md)
 - [Настройки и mock VPN-адаптеры](docs/architecture/0006-vpn-settings-and-adapters.md)
 - [Threat model VPN-движков](docs/security/vpn-engine-threat-model.md)
 - [Минимальная Windows-служба](docs/architecture/windows-privileged-service.md)
 - [Отчёт этапа 8: Windows-служба и IPC](docs/stage8-windows-service-report.md)
 - [Production-активация этапа 9](docs/architecture/0008-production-activation.md)
 - [Реальная граница server API](docs/server-api-boundary.md)
+- [Production GUI и VPN IPC этапа 12](docs/architecture/0011-production-gui-ipc.md)
 - [Логи, redaction pipeline и ZIP-экспорт](docs/architecture/0007-logs-and-diagnostics.md)
 - [Релизный аудит этапа 7](docs/release-audit-stage7.md)
 - [Требования к production-обновлениям, speed test и публичным ссылкам](docs/client-release-requirements.md)
@@ -51,7 +53,7 @@ crates/vpn_contracts/         Versioned service messages
 crates/vpn_service_core/      Pure finite-state machine
 services/windows_vpn_service/ Windows SCM host and secured local named pipe
 apps/desktop/windows/         Standard Flutter Windows runner
-proto/                        Reference schema; Rust wire codec is authoritative for v1
+proto/                        Reference schema; Rust wire codec is authoritative for v2
 docs/                         Architecture and API inventory
 tool/                         Bootstrap and boundary verification
 ```
@@ -89,6 +91,7 @@ powershell -NoProfile -File tool/verify-stage7.ps1
 powershell -NoProfile -File tool/verify-stage9.ps1
 powershell -NoProfile -File tool/verify-stage10.ps1
 powershell -NoProfile -File tool/verify-stage11.ps1
+powershell -NoProfile -File tool/verify-stage12.ps1
 ```
 
 Stage 10 adds strict WireGuard configuration parsing plus typed profile
@@ -102,6 +105,13 @@ The privileged service verifies pinned DLL hashes, controls one fixed tunnel,
 removes temporary plaintext after startup, and exposes traffic/handshake data
 through bounded IPC. AmneziaWG and VLESS remain explicitly unavailable until
 their separate engine stages.
+
+Stage 12 connects the release GUI to the typed Windows VPN IPC. A successful
+12-digit activation provisions an opaque service-side profile handle; only then
+can the GUI request a real WireGuard connection. Payment, speed test and other
+unfinished sections are hidden from the minimal release. AmneziaWG and VLESS
+credentials are retained only in OS secure storage until their real engines are
+added in stages 13 and 14.
 
 Запуск mock UI после bootstrap:
 
