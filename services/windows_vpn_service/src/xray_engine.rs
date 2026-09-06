@@ -351,13 +351,7 @@ mod tests {
     }
     #[test]
     fn committed_payload_hashes_match() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("third_party")
-            .join("xray")
-            .join("windows")
-            .join("amd64");
+        let root = super::super::test_payload_root("xray");
         verify_hash(&root.join("xray.exe"), XRAY_SHA256).expect("xray");
         verify_hash(&root.join("wintun.dll"), WINTUN_SHA256).expect("wintun");
     }
@@ -365,13 +359,7 @@ mod tests {
     #[test]
     #[ignore = "Xray TUN validation opens Wintun and requires an elevated Windows token"]
     fn pinned_xray_accepts_rendered_configuration() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("third_party")
-            .join("xray")
-            .join("windows")
-            .join("amd64");
+        let root = super::super::test_payload_root("xray");
         let config_path = std::env::temp_dir().join(format!(
             "kenai-xray-config-test-{}.json",
             std::process::id()

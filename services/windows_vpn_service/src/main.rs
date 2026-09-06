@@ -46,6 +46,31 @@ mod windows_service_host {
 
     const SERVICE_NAME: &str = "KenaiVpnService";
 
+    #[cfg(test)]
+    fn test_payload_root(product: &str) -> std::path::PathBuf {
+        let compiled = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("third_party")
+            .join(product)
+            .join("windows")
+            .join("amd64");
+        if compiled.is_dir() {
+            return compiled;
+        }
+        let working = std::env::current_dir().expect("test working directory");
+        working
+            .ancestors()
+            .map(|root| {
+                root.join("third_party")
+                    .join(product)
+                    .join("windows")
+                    .join("amd64")
+            })
+            .find(|candidate| candidate.is_dir())
+            .expect("workspace payload directory")
+    }
+
     define_windows_service!(ffi_service_main, service_main);
 
     pub fn run() -> windows_service::Result<()> {

@@ -331,13 +331,7 @@ mod tests {
     }
     #[test]
     fn committed_payload_hashes_match() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("third_party")
-            .join("amneziawg")
-            .join("windows")
-            .join("amd64");
+        let root = super::super::test_payload_root("amneziawg");
         verify_hash(&root.join("amneziawg.exe"), ENGINE_SHA256).expect("engine");
         verify_hash(&root.join("awg.exe"), TOOLS_SHA256).expect("tools");
         verify_hash(&root.join("wintun.dll"), WINTUN_SHA256).expect("wintun");

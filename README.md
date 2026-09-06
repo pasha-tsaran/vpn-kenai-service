@@ -42,6 +42,7 @@ VLESS + REALITY/Xray. Release-клиент создаёт туннель выб�
 - [Логи, redaction pipeline и ZIP-экспорт](docs/architecture/0007-logs-and-diagnostics.md)
 - [Релизный аудит этапа 7](docs/release-audit-stage7.md)
 - [Требования к production-обновлениям, speed test и публичным ссылкам](docs/client-release-requirements.md)
+- [Windows-установщик, repair, uninstall и подпись](docs/architecture/0013-windows-installer.md)
 
 ## Структура
 
@@ -94,6 +95,7 @@ powershell -NoProfile -File tool/verify-stage11.ps1
 powershell -NoProfile -File tool/verify-stage12.ps1
 powershell -NoProfile -File tool/verify-stage13.ps1
 powershell -NoProfile -File tool/verify-stage14.ps1
+powershell -NoProfile -File tool/verify-stage15.ps1
 ```
 
 Stage 10 adds strict WireGuard configuration parsing plus typed profile
@@ -121,6 +123,20 @@ IPC v4. The service owns its TUN routes, DNS, fixed process lifecycle and
 DPAPI-encrypted profile. The GUI retains only an opaque handle. The upstream
 Xray executable is not Authenticode-signed; its official-release provenance
 and exact hashes are documented and enforced instead.
+
+Stage 15 adds a single elevated Windows Setup/Uninstall boundary. Build a
+configured installer only with the real HTTPS API origin:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tool/build-windows-installer.ps1 `
+  -ApiBaseUrl https://api.example.com
+```
+
+For packaging verification without a server, `-AllowUnconfigured` creates only
+`dist/KenaiVPN-Setup-UNCONFIGURED.exe`. It installs the complete GUI/service and
+three-engine layout but activation intentionally fails closed, so this artifact
+must not be distributed. Public builds also require the owner's Authenticode
+certificate via `-CertificateThumbprint`.
 
 Запуск mock UI после bootstrap:
 

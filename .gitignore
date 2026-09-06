@@ -4,6 +4,7 @@
 .flutter-plugins-dependencies
 .packages
 build/
+dist/
 coverage/
 
 # Rust (Cargo.lock is intentionally tracked for this application workspace)

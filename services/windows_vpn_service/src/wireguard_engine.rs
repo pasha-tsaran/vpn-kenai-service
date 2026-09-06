@@ -494,13 +494,7 @@ mod tests {
 
     #[test]
     fn committed_payload_hashes_match_the_pinned_manifest_when_present() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("third_party")
-            .join("wireguard")
-            .join("windows")
-            .join("amd64");
+        let root = super::super::test_payload_root("wireguard");
         verify_hash(&root.join("tunnel.dll"), TUNNEL_SHA256).expect("tunnel hash");
         verify_hash(&root.join("wireguard.dll"), DRIVER_SHA256).expect("driver hash");
     }
