@@ -92,43 +92,47 @@ FunctionEnd
 ; make sc.exe return ERROR_INVALID_COMMAND_LINE (1639).
 Function ConfigureServiceRegistration
   StrCpy $ServiceBinaryPath '"$INSTDIR\service\KenaiVpnService.exe"'
-  System::Call 'advapi32::OpenSCManagerW(p 0, p 0, i 0x0003) p.r0'
+  ; Use the System plug-in's native NSIS text/integer-handle convention and
+  ; capture GetLastError atomically with ?e. A later plug-in instruction is
+  ; allowed to overwrite the thread's last-error value.
+  System::Call 'advapi32::OpenSCManagerW(n, n, i 0x0003) i.r0 ?e'
+  Pop $3
   ${If} $0 == 0
-    System::Call 'kernel32::GetLastError() i.r2'
-    MessageBox MB_ICONSTOP "Не удалось открыть диспетчер системных служб. Код: $2"
+    MessageBox MB_ICONSTOP "Не удалось открыть диспетчер системных служб. Код: $3"
     Abort
   ${EndIf}
 
-  ${If} $ServiceWasInstalled == "1"
-    System::Call 'advapi32::OpenServiceW(p r0, w "${SERVICE_NAME}", i 0x0002) p.r1'
-    ${If} $1 == 0
-      System::Call 'kernel32::GetLastError() i.r2'
-      System::Call 'advapi32::CloseServiceHandle(p r0)'
-      MessageBox MB_ICONSTOP "Не удалось открыть системную службу Kenai VPN. Код: $2"
+  ; Open first instead of trusting a separate query whose result could become
+  ; stale between calls. ERROR_SERVICE_DOES_NOT_EXIST means a create is needed.
+  System::Call 'advapi32::OpenServiceW(i r0, t "${SERVICE_NAME}", i 0x0002) i.r1 ?e'
+  Pop $3
+  ${If} $1 == 0
+    ${If} $3 != 1060
+      System::Call 'advapi32::CloseServiceHandle(i r0)'
+      MessageBox MB_ICONSTOP "Не удалось проверить системную службу Kenai VPN. Код: $3"
       Abort
     ${EndIf}
-    System::Call 'advapi32::ChangeServiceConfigW(p r1, i 0xffffffff, i 2, i 1, w "$ServiceBinaryPath", p 0, p 0, p 0, p 0, p 0, w "Kenai VPN Service") i.r2'
+    System::Call 'advapi32::CreateServiceW(i r0, t "${SERVICE_NAME}", t "Kenai VPN Service", i 0x000f01ff, i 0x10, i 2, i 1, t "$ServiceBinaryPath", n, n, n, n, n) i.r1 ?e'
+    Pop $3
+    ${If} $1 == 0
+      System::Call 'advapi32::CloseServiceHandle(i r0)'
+      MessageBox MB_ICONSTOP "Не удалось создать системную службу Kenai VPN. Код: $3"
+      Abort
+    ${EndIf}
+    StrCpy $ServiceWasCreated "1"
   ${Else}
-    System::Call 'advapi32::CreateServiceW(p r0, w "${SERVICE_NAME}", w "Kenai VPN Service", i 0x000f01ff, i 0x10, i 2, i 1, w "$ServiceBinaryPath", p 0, p 0, p 0, p 0, p 0) p.r1'
-    ${If} $1 != 0
-      StrCpy $ServiceWasCreated "1"
-      StrCpy $2 "1"
-    ${Else}
-      StrCpy $2 "0"
+    System::Call 'advapi32::ChangeServiceConfigW(i r1, i 0xffffffff, i 2, i 1, t "$ServiceBinaryPath", n, n, n, n, n, t "Kenai VPN Service") i.r2 ?e'
+    Pop $3
+    ${If} $2 == 0
+      System::Call 'advapi32::CloseServiceHandle(i r1)'
+      System::Call 'advapi32::CloseServiceHandle(i r0)'
+      MessageBox MB_ICONSTOP "Не удалось обновить системную службу Kenai VPN. Код: $3"
+      Abort
     ${EndIf}
   ${EndIf}
 
-  ${If} $2 == 0
-    System::Call 'kernel32::GetLastError() i.r3'
-    ${If} $1 != 0
-      System::Call 'advapi32::CloseServiceHandle(p r1)'
-    ${EndIf}
-    System::Call 'advapi32::CloseServiceHandle(p r0)'
-    MessageBox MB_ICONSTOP "Не удалось зарегистрировать системную службу Kenai VPN. Код: $3"
-    Abort
-  ${EndIf}
-  System::Call 'advapi32::CloseServiceHandle(p r1)'
-  System::Call 'advapi32::CloseServiceHandle(p r0)'
+  System::Call 'advapi32::CloseServiceHandle(i r1)'
+  System::Call 'advapi32::CloseServiceHandle(i r0)'
 FunctionEnd
 
 Function .onInstFailed

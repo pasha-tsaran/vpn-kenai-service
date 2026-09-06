@@ -19,6 +19,8 @@ Service creation and repair use the Windows Service API directly so a quoted
 binary path remains unambiguous even when the installation directory contains
 spaces. Command-based policy steps include their exact operation and sanitized
 output in the installer details if Windows rejects one.
+Service API failures are captured atomically before another installer operation
+can overwrite the calling thread's Windows error value.
 
 Rerunning the same installer is the repair/update path. It stops the existing
 service, replaces the complete file set, reapplies the fixed service binary
