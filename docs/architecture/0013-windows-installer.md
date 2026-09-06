@@ -15,12 +15,11 @@ places first-party binaries under `%ProgramFiles%\Kenai VPN`, preserves the
 fixed side-by-side payload layout expected by the service, creates
 `KenaiVpnService` as LocalSystem with automatic startup, enables its unrestricted
 service SID, configures bounded recovery restarts and starts it.
-Service creation and repair use the Windows Service API directly so a quoted
-binary path remains unambiguous even when the installation directory contains
-spaces. Command-based policy steps include their exact operation and sanitized
-output in the installer details if Windows rejects one.
-Service API failures are captured atomically before another installer operation
-can overwrite the calling thread's Windows error value.
+Service creation and repair use the executable's Windows 8.3 path. The resulting
+service command contains no spaces, avoiding both an unquoted service-path
+vulnerability and ambiguous nested quoting through the NSIS process plug-in.
+Policy steps include their exact operation and sanitized output in the installer
+details if Windows rejects one.
 
 Rerunning the same installer is the repair/update path. It stops the existing
 service, replaces the complete file set, reapplies the fixed service binary
@@ -32,6 +31,10 @@ services if crash recovery left them behind, deletes the service-owned DPAPI
 profile/runtime directory, current-user logs and current-user secure-storage
 files/key, shortcuts, registry entry and installation directory. Explicitly
 exported diagnostic ZIP files in Downloads are user-owned and are preserved.
+If the running uninstaller temporarily retains its protected parent directory,
+Windows schedules that final empty directory for deletion after process exit.
+The uninstaller first moves its working directory to `%TEMP%`, so it never
+prevents immediate removal of an installed payload directory itself.
 Users should sign out before uninstalling on a shared PC; Windows does not let
 one account erase another account's DPAPI-protected storage.
 

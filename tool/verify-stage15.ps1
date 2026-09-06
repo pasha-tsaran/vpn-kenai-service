@@ -14,15 +14,20 @@ function Require-Text([string]$Path, [string]$Pattern) {
 
 Require-Text 'installer/KenaiVPN.nsi' 'RequestExecutionLevel admin'
 Require-Text 'installer/KenaiVPN.nsi' 'File /r "\$\{STAGE_ROOT\}\\service\\\*"'
-Require-Text 'installer/KenaiVPN.nsi' 'OpenSCManagerW'
-Require-Text 'installer/KenaiVPN.nsi' 'CreateServiceW'
-Require-Text 'installer/KenaiVPN.nsi' 'ChangeServiceConfigW'
+Require-Text 'installer/KenaiVPN.nsi' 'GetFullPathName /SHORT'
+Require-Text 'installer/KenaiVPN.nsi' 'sc\.exe.*create.*binPath='
 Require-Text 'installer/KenaiVPN.nsi' 'sidtype.*unrestricted'
 Require-Text 'installer/KenaiVPN.nsi' 'icacls.*S-1-5-32-545.*\(OI\)\(CI\)RX'
 Require-Text 'installer/KenaiVPN.nsi' 'WireGuardTunnel\$\$Kenai'
 Require-Text 'installer/KenaiVPN.nsi' 'AmneziaWGTunnel\$\$KenaiAwg'
 Require-Text 'installer/KenaiVPN.nsi' 'CredDeleteW'
+if (Select-String -LiteralPath (Join-Path $RepoRoot 'installer/KenaiVPN.nsi') `
+        -Pattern 'CreateServiceW|OpenSCManagerW' -Quiet) {
+    throw 'Installer must not register the service through an unsafe raw System plug-in call.'
+}
 Require-Text 'installer/KenaiVPN.nsi' 'RMDir /r "\$APPDATA\\KenaiVPN"'
+Require-Text 'installer/KenaiVPN.nsi' 'RMDir /r /REBOOTOK "\$INSTDIR"'
+Require-Text 'installer/KenaiVPN.nsi' 'SetOutPath "\$TEMP"'
 Require-Text 'tool/build-windows-installer.ps1' 'ApiBaseUrl is required'
 Require-Text 'tool/build-windows-installer.ps1' 'AllowUnconfigured only for packaging verification'
 Require-Text 'tool/build-windows-installer.ps1' '56581f90db321581c5381193d796fffcf2d24b2f8fed2160a6c6a3baa67f2c4f'

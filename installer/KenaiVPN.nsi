@@ -87,52 +87,23 @@ Function RequireServiceSuccess
   ${EndIf}
 FunctionEnd
 
-; Register the service through the Windows Service API. Passing a quoted image
-; path through sc.exe/nsExec is ambiguous when $INSTDIR contains spaces and can
-; make sc.exe return ERROR_INVALID_COMMAND_LINE (1639).
+; sc.exe receives an 8.3 path without spaces. This avoids both the unquoted
+; service-path vulnerability and nested quote parsing through nsExec.
 Function ConfigureServiceRegistration
-  StrCpy $ServiceBinaryPath '"$INSTDIR\service\KenaiVpnService.exe"'
-  ; Use the System plug-in's native NSIS text/integer-handle convention and
-  ; capture GetLastError atomically with ?e. A later plug-in instruction is
-  ; allowed to overwrite the thread's last-error value.
-  System::Call 'advapi32::OpenSCManagerW(n, n, i 0x0003) i.r0 ?e'
-  Pop $3
-  ${If} $0 == 0
-    MessageBox MB_ICONSTOP "Не удалось открыть диспетчер системных служб. Код: $3"
+  GetFullPathName /SHORT $ServiceBinaryPath "$INSTDIR\service\KenaiVpnService.exe"
+  ${If} $ServiceBinaryPath == ""
+    MessageBox MB_ICONSTOP "Не удалось определить безопасный путь к системной службе Kenai VPN."
     Abort
   ${EndIf}
 
-  ; Open first instead of trusting a separate query whose result could become
-  ; stale between calls. ERROR_SERVICE_DOES_NOT_EXIST means a create is needed.
-  System::Call 'advapi32::OpenServiceW(i r0, t "${SERVICE_NAME}", i 0x0002) i.r1 ?e'
-  Pop $3
-  ${If} $1 == 0
-    ${If} $3 != 1060
-      System::Call 'advapi32::CloseServiceHandle(i r0)'
-      MessageBox MB_ICONSTOP "Не удалось проверить системную службу Kenai VPN. Код: $3"
-      Abort
-    ${EndIf}
-    System::Call 'advapi32::CreateServiceW(i r0, t "${SERVICE_NAME}", t "Kenai VPN Service", i 0x000f01ff, i 0x10, i 2, i 1, t "$ServiceBinaryPath", n, n, n, n, n) i.r1 ?e'
-    Pop $3
-    ${If} $1 == 0
-      System::Call 'advapi32::CloseServiceHandle(i r0)'
-      MessageBox MB_ICONSTOP "Не удалось создать системную службу Kenai VPN. Код: $3"
-      Abort
-    ${EndIf}
-    StrCpy $ServiceWasCreated "1"
+  StrCpy $ServiceAction "регистрация службы"
+  ${If} $ServiceWasInstalled == "1"
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" config "${SERVICE_NAME}" binPath= "$ServiceBinaryPath" start= auto obj= LocalSystem DisplayName= "Kenai VPN Service"'
   ${Else}
-    System::Call 'advapi32::ChangeServiceConfigW(i r1, i 0xffffffff, i 2, i 1, t "$ServiceBinaryPath", n, n, n, n, n, t "Kenai VPN Service") i.r2 ?e'
-    Pop $3
-    ${If} $2 == 0
-      System::Call 'advapi32::CloseServiceHandle(i r1)'
-      System::Call 'advapi32::CloseServiceHandle(i r0)'
-      MessageBox MB_ICONSTOP "Не удалось обновить системную службу Kenai VPN. Код: $3"
-      Abort
-    ${EndIf}
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" create "${SERVICE_NAME}" binPath= "$ServiceBinaryPath" start= auto obj= LocalSystem DisplayName= "Kenai VPN Service"'
+    StrCpy $ServiceWasCreated "1"
   ${EndIf}
-
-  System::Call 'advapi32::CloseServiceHandle(i r1)'
-  System::Call 'advapi32::CloseServiceHandle(i r0)'
+  Call RequireServiceSuccess
 FunctionEnd
 
 Function .onInstFailed
@@ -215,6 +186,8 @@ SectionEnd
 Section "Uninstall"
   SetShellVarContext all
   SetRegView 64
+  ; Never keep the process current directory inside the tree being removed.
+  SetOutPath "$TEMP"
 
   nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM "KenaiVPN.exe" /T /F'
   Pop $ServiceResult
@@ -254,5 +227,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Kenai VPN\Удалить Kenai VPN.lnk"
   RMDir "$SMPROGRAMS\Kenai VPN"
   DeleteRegKey HKLM "${UNINSTALL_KEY}"
-  RMDir /r "$INSTDIR"
+  ; Complete removal after process exit if the running uninstaller temporarily
+  ; retains its protected parent directory.
+  RMDir /r /REBOOTOK "$INSTDIR"
 SectionEnd
