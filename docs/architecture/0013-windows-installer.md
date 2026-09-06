@@ -15,6 +15,10 @@ places first-party binaries under `%ProgramFiles%\Kenai VPN`, preserves the
 fixed side-by-side payload layout expected by the service, creates
 `KenaiVpnService` as LocalSystem with automatic startup, enables its unrestricted
 service SID, configures bounded recovery restarts and starts it.
+Service creation and repair use the Windows Service API directly so a quoted
+binary path remains unambiguous even when the installation directory contains
+spaces. Command-based policy steps include their exact operation and sanitized
+output in the installer details if Windows rejects one.
 
 Rerunning the same installer is the repair/update path. It stops the existing
 service, replaces the complete file set, reapplies the fixed service binary

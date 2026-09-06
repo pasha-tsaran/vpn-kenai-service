@@ -14,6 +14,9 @@ function Require-Text([string]$Path, [string]$Pattern) {
 
 Require-Text 'installer/KenaiVPN.nsi' 'RequestExecutionLevel admin'
 Require-Text 'installer/KenaiVPN.nsi' 'File /r "\$\{STAGE_ROOT\}\\service\\\*"'
+Require-Text 'installer/KenaiVPN.nsi' 'OpenSCManagerW'
+Require-Text 'installer/KenaiVPN.nsi' 'CreateServiceW'
+Require-Text 'installer/KenaiVPN.nsi' 'ChangeServiceConfigW'
 Require-Text 'installer/KenaiVPN.nsi' 'sidtype.*unrestricted'
 Require-Text 'installer/KenaiVPN.nsi' 'icacls.*S-1-5-32-545.*\(OI\)\(CI\)RX'
 Require-Text 'installer/KenaiVPN.nsi' 'WireGuardTunnel\$\$Kenai'
@@ -26,6 +29,7 @@ Require-Text 'tool/build-windows-installer.ps1' '56581f90db321581c5381193d796fff
 Require-Text 'tool/build-windows-installer.ps1' '757c22153dd8b90f5e297310d9966997'
 Require-Text 'tool/build-windows-installer.ps1' '/INPUTCHARSET UTF8'
 Require-Text 'tool/build-windows-installer.ps1' 'CertificateThumbprint'
+Require-Text 'tool/build-windows-installer.ps1' 'InstallerFileName must be a plain \.exe file name'
 
 foreach ($relative in @(
     'third_party/wireguard/windows/amd64/wireguard.dll',

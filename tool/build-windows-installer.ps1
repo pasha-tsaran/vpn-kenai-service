@@ -4,7 +4,8 @@ param(
     [string]$Version = '0.1.0',
     [switch]$AllowUnconfigured,
     [string]$CertificateThumbprint,
-    [string]$TimestampUrl = 'https://timestamp.digicert.com'
+    [string]$TimestampUrl = 'https://timestamp.digicert.com',
+    [string]$InstallerFileName
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +29,10 @@ if ($physicalRepoRoot -match '[^\x00-\x7F]') {
 try {
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw 'Version must use major.minor.patch format.'
+}
+if (-not [string]::IsNullOrWhiteSpace($InstallerFileName) -and
+    $InstallerFileName -notmatch '^[A-Za-z0-9._-]+\.exe$') {
+    throw 'InstallerFileName must be a plain .exe file name.'
 }
 if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint) -and
     $CertificateThumbprint -notmatch '^[0-9A-Fa-f]{40,64}$') {
@@ -166,10 +171,15 @@ if (-not (Test-Path -LiteralPath $makeNsis)) {
 }
 if (-not (Test-Path -LiteralPath $makeNsis)) { throw 'NSIS compiler is unavailable.' }
 
-$outputName = if ([string]::IsNullOrWhiteSpace($ApiBaseUrl)) {
+$defaultOutputName = if ([string]::IsNullOrWhiteSpace($ApiBaseUrl)) {
     'KenaiVPN-Setup-UNCONFIGURED.exe'
 } else {
     'KenaiVPN-Setup.exe'
+}
+$outputName = if ([string]::IsNullOrWhiteSpace($InstallerFileName)) {
+    $defaultOutputName
+} else {
+    $InstallerFileName
 }
 $outputPath = Join-Path $distRoot $outputName
 $fileVersion = "$Version.0"

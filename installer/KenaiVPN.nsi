@@ -60,6 +60,9 @@ VIAddVersionKey /LANG=1049 "LegalCopyright" "Copyright (C) 2026 Kenai VPN"
 Var ServiceResult
 Var ServiceOutput
 Var ServiceWasInstalled
+Var ServiceWasCreated
+Var ServiceAction
+Var ServiceBinaryPath
 
 Function .onInit
   ${IfNot} ${RunningX64}
@@ -77,9 +80,65 @@ Function RequireServiceSuccess
   Pop $ServiceResult
   Pop $ServiceOutput
   ${If} $ServiceResult != 0
-    DetailPrint "Service command failed with code $ServiceResult"
-    MessageBox MB_ICONSTOP "Не удалось настроить системную службу Kenai VPN. Код: $ServiceResult"
+    DetailPrint "$ServiceAction failed with code $ServiceResult"
+    DetailPrint "$ServiceOutput"
+    MessageBox MB_ICONSTOP "Не удалось выполнить этап '$ServiceAction' при настройке системной службы Kenai VPN. Код: $ServiceResult"
     Abort
+  ${EndIf}
+FunctionEnd
+
+; Register the service through the Windows Service API. Passing a quoted image
+; path through sc.exe/nsExec is ambiguous when $INSTDIR contains spaces and can
+; make sc.exe return ERROR_INVALID_COMMAND_LINE (1639).
+Function ConfigureServiceRegistration
+  StrCpy $ServiceBinaryPath '"$INSTDIR\service\KenaiVpnService.exe"'
+  System::Call 'advapi32::OpenSCManagerW(p 0, p 0, i 0x0003) p.r0'
+  ${If} $0 == 0
+    System::Call 'kernel32::GetLastError() i.r2'
+    MessageBox MB_ICONSTOP "Не удалось открыть диспетчер системных служб. Код: $2"
+    Abort
+  ${EndIf}
+
+  ${If} $ServiceWasInstalled == "1"
+    System::Call 'advapi32::OpenServiceW(p r0, w "${SERVICE_NAME}", i 0x0002) p.r1'
+    ${If} $1 == 0
+      System::Call 'kernel32::GetLastError() i.r2'
+      System::Call 'advapi32::CloseServiceHandle(p r0)'
+      MessageBox MB_ICONSTOP "Не удалось открыть системную службу Kenai VPN. Код: $2"
+      Abort
+    ${EndIf}
+    System::Call 'advapi32::ChangeServiceConfigW(p r1, i 0xffffffff, i 2, i 1, w "$ServiceBinaryPath", p 0, p 0, p 0, p 0, p 0, w "Kenai VPN Service") i.r2'
+  ${Else}
+    System::Call 'advapi32::CreateServiceW(p r0, w "${SERVICE_NAME}", w "Kenai VPN Service", i 0x000f01ff, i 0x10, i 2, i 1, w "$ServiceBinaryPath", p 0, p 0, p 0, p 0, p 0) p.r1'
+    ${If} $1 != 0
+      StrCpy $ServiceWasCreated "1"
+      StrCpy $2 "1"
+    ${Else}
+      StrCpy $2 "0"
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $2 == 0
+    System::Call 'kernel32::GetLastError() i.r3'
+    ${If} $1 != 0
+      System::Call 'advapi32::CloseServiceHandle(p r1)'
+    ${EndIf}
+    System::Call 'advapi32::CloseServiceHandle(p r0)'
+    MessageBox MB_ICONSTOP "Не удалось зарегистрировать системную службу Kenai VPN. Код: $3"
+    Abort
+  ${EndIf}
+  System::Call 'advapi32::CloseServiceHandle(p r1)'
+  System::Call 'advapi32::CloseServiceHandle(p r0)'
+FunctionEnd
+
+Function .onInstFailed
+  ${If} $ServiceWasCreated == "1"
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" stop "${SERVICE_NAME}"'
+    Pop $ServiceResult
+    Pop $ServiceOutput
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" delete "${SERVICE_NAME}"'
+    Pop $ServiceResult
+    Pop $ServiceOutput
   ${EndIf}
 FunctionEnd
 
@@ -89,6 +148,7 @@ Section "Kenai VPN" SEC_MAIN
   SetRegView 64
 
   StrCpy $ServiceWasInstalled "0"
+  StrCpy $ServiceWasCreated "0"
   nsExec::ExecToStack '"$SYSDIR\sc.exe" query "${SERVICE_NAME}"'
   Pop $ServiceResult
   Pop $ServiceOutput
@@ -112,23 +172,22 @@ Section "Kenai VPN" SEC_MAIN
   File /r "${STAGE_ROOT}\licenses\*"
 
   ; SYSTEM and Administrators can update; interactive users receive read/execute only.
+  StrCpy $ServiceAction "защита файлов приложения"
   nsExec::ExecToStack '"$SYSDIR\icacls.exe" "$INSTDIR" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"'
   Call RequireServiceSuccess
 
-  ${If} $ServiceWasInstalled == "1"
-    nsExec::ExecToStack '"$SYSDIR\sc.exe" config "${SERVICE_NAME}" binPath= "$\"$INSTDIR\service\KenaiVpnService.exe$\"" start= auto obj= LocalSystem DisplayName= "Kenai VPN Service"'
-    Call RequireServiceSuccess
-  ${Else}
-    nsExec::ExecToStack '"$SYSDIR\sc.exe" create "${SERVICE_NAME}" binPath= "$\"$INSTDIR\service\KenaiVpnService.exe$\"" start= auto obj= LocalSystem DisplayName= "Kenai VPN Service"'
-    Call RequireServiceSuccess
-  ${EndIf}
+  Call ConfigureServiceRegistration
 
+  StrCpy $ServiceAction "описание службы"
   nsExec::ExecToStack '"$SYSDIR\sc.exe" description "${SERVICE_NAME}" "Privileged tunnel service for Kenai VPN"'
   Call RequireServiceSuccess
+  StrCpy $ServiceAction "изоляция службы"
   nsExec::ExecToStack '"$SYSDIR\sc.exe" sidtype "${SERVICE_NAME}" unrestricted'
   Call RequireServiceSuccess
+  StrCpy $ServiceAction "политика восстановления службы"
   nsExec::ExecToStack '"$SYSDIR\sc.exe" failure "${SERVICE_NAME}" reset= 86400 actions= restart/5000/restart/15000'
   Call RequireServiceSuccess
+  StrCpy $ServiceAction "запуск службы"
   nsExec::ExecToStack '"$SYSDIR\sc.exe" start "${SERVICE_NAME}"'
   Call RequireServiceSuccess
 
